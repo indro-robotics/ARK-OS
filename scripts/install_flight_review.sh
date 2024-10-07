@@ -3,16 +3,12 @@ source $(dirname $BASH_SOURCE)/functions.sh
 
 echo "Installing flight_review"
 
-# Stop and remove the service
-stop_disable_remove_service flight-review
+service_uninstall flight-review
 
-# Clean up directories
-sudo rm -rf ~/code/flight_review &>/dev/null
-
-git_clone_retry https://github.com/PX4/flight_review.git ~/code/flight_review
+sudo rm -rf /opt/flight_review
 
 pushd .
-cd ~/code/flight_review
+cd $PROJECT_ROOT/submodules/flight_review
 
 # Install dependencies
 if [ "$TARGET" = "jetson" ]; then
@@ -28,25 +24,29 @@ elif [ "$TARGET" = "pi" ]; then
 fi
 
 # Create user config overrides
-touch app/config_user.ini
-echo "[general]" >> app/config_user.ini
-echo "domain_name = $(hostname -f)/flight-review" >> app/config_user.ini
-echo "verbose_output = 1" >> app/config_user.ini
-echo "storage_path = /opt/flight_review/data" >> app/config_user.ini
+mkdir -p $XDG_CONFIG_HOME/flight_review
+CONFIG_USER_FILE="$XDG_CONFIG_HOME/flight_review/config_user.ini"
+touch $CONFIG_USER_FILE
 
-# Copy the app to /opt
-sudo mkdir -p /opt/flight_review/app/
-sudo cp -r app/* /opt/flight_review/app/
+echo "[general]" >> $CONFIG_USER_FILE
+echo "domain_name = $(hostname -f)/flight-review" >> $CONFIG_USER_FILE
+echo "verbose_output = 1" >> $CONFIG_USER_FILE
+echo "storage_path = /opt/flight_review/data" >> $CONFIG_USER_FILE
 
-# Make user owner
-sudo chown -R $USER:$USER /opt/flight_review
-
-# Initialize database
-/opt/flight_review/app/setup_db.py
-
-add_service_manifest flight-review
-
-# Install the service
-install_and_enable_service flight-review
+# Copy the app to $XDG_DATA_HOME
+APP_DIR="$XDG_DATA_HOME/flight_review/app"
+mkdir -p $APP_DIR
+cp -r app/* $APP_DIR/
 
 popd
+
+# Make user owner
+sudo chown -R $USER:$USER $XDG_DATA_HOME/flight_review
+
+# Initialize database
+$APP_DIR/setup_db.py
+
+service_add_manifest flight-review
+
+service_install flight-review
+

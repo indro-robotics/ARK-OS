@@ -22,20 +22,14 @@ else
 	sudo apt remove gstreamer1.0-vaapi
 fi
 
-stop_disable_remove_service rtsp-server
+service_uninstall rtsp-server
 
-# clean up legacy if it exists
-sudo rm -rf ~/code/rtsp-server &>/dev/null
-
-# Clone, build, and install
-git_clone_retry https://github.com/ARK-Electronics/rtsp-server.git ~/code/rtsp-server
 pushd .
-cd ~/code/rtsp-server
+cd $PROJECT_ROOT/submodules/rtsp-server
 make install
 sudo ldconfig
 popd
 
-add_service_manifest rtsp-server
+service_add_manifest rtsp-server
 
-# Install the service
-install_and_enable_service rtsp-server
+service_install rtsp-server

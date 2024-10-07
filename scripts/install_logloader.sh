@@ -4,21 +4,18 @@ source $(dirname $BASH_SOURCE)/functions.sh
 echo "Installing logloader"
 
 # Stop and remove the service
-stop_disable_remove_service logloader
+service_uninstall logloader
 
 # Clean up directories
 sudo rm -rf ~/logloader &>/dev/null
 sudo rm -rf ~/code/logloader &>/dev/null
 
-git_clone_retry https://github.com/ARK-Electronics/logloader.git ~/code/logloader
-
 pushd .
-cd ~/code/logloader
+cd $PROJECT_ROOT/submodules/logloader
 make install
 sudo ldconfig
 popd
 
-add_service_manifest logloader
+service_add_manifest logloader
 
-# Install the service
-install_and_enable_service logloader
+service_install logloader

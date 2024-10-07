@@ -3,36 +3,30 @@ source $(dirname $BASH_SOURCE)/functions.sh
 echo "Installing ARK-UI"
 
 # Remove old ark-ui
-stop_disable_remove_service pilot-portal
-stop_disable_remove_service ark-ui-backend
+service_uninstall pilot-portal
+service_uninstall ark-ui-backend
 
 # clean up old nginx
 sudo rm /etc/nginx/sites-enabled/ark-ui &>/dev/null
 sudo rm /etc/nginx/sites-available/ark-ui &>/dev/null
-
-# clean up old frontend files
 sudo rm -rf /var/www/ark-ui &>/dev/null
 
-# Clone and build repo
-ARK_UI_SRC_DIR="$HOME/code/ark-ui"
-sudo rm -rf $ARK_UI_SRC_DIR
-git_clone_retry https://github.com/ARK-Electronics/ark-ui.git $ARK_UI_SRC_DIR
 pushd .
-cd $ARK_UI_SRC_DIR
+cd $PROJECT_ROOT/submodules/ark-ui
 ./install.sh
 popd
 
-
-# nginx config
 NGINX_CONFIG_FILE_PATH="/etc/nginx/sites-available/ark-ui"
-sudo cp "$ARK_UI_SRC_DIR/ark-ui.nginx" $NGINX_CONFIG_FILE_PATH
-DEPLOY_PATH="/var/www/ark-ui"
-sudo mkdir -p $DEPLOY_PATH/html
-sudo mkdir -p $DEPLOY_PATH/api
+DEPLOY_PATH="$XDG_DATA_HOME/ark-ui"
+
+# Copy nginx config
+sudo cp "$PROJECT_ROOT/submodules/ark-ui/ark-ui.nginx" $NGINX_CONFIG_FILE_PATH
 
 # Copy frontend and backend files to deployment path
-sudo cp -r $ARK_UI_SRC_DIR/ark-ui/dist/* $DEPLOY_PATH/html/
-sudo cp -r $ARK_UI_SRC_DIR/backend/* $DEPLOY_PATH/api/
+sudo mkdir -p $DEPLOY_PATH/html
+sudo mkdir -p $DEPLOY_PATH/api
+sudo cp -r $PROJECT_ROOT/submodules/ark-ui/ark-ui/dist/* $DEPLOY_PATH/html/
+sudo cp -r $PROJECT_ROOT/submodules/ark-ui/backend/* $DEPLOY_PATH/api/
 
 # Set permissions: www-data owns the path and has read/write permissions
 sudo chown -R www-data:www-data $DEPLOY_PATH
@@ -48,13 +42,12 @@ sudo rm /etc/nginx/sites-enabled/default &>/dev/null
 # To check that it can run
 sudo -u www-data stat $DEPLOY_PATH
 
-# Test the configuration and restart
+# Test the configuration and restart nginx
 sudo nginx -t
 sudo systemctl restart nginx
 
-add_service_manifest ark-ui-backend
+service_add_manifest ark-ui-backend
 
-# Install services as user
-install_and_enable_service ark-ui-backend
+service_install ark-ui-backend
 
 echo "Finished $(basename $BASH_SOURCE)"

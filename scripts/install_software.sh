@@ -227,9 +227,9 @@ fi
 ./setup/install_mavsdk_examples.sh
 
 ########## hotspot-control ##########
-stop_disable_remove_service hotspot-control
-add_service_manifest hotspot-control
-install_and_enable_service hotspot-control
+service_uninstall hotspot-control
+service_add_manifest hotspot-control
+service_install hotspot-control
 
 ########## logloader ##########
 if [ "$INSTALL_LOGLOADER" = "y" ]; then
@@ -268,7 +268,6 @@ if [ "$TARGET" = "jetson" ]; then
 fi
 
 sudo systemctl enable systemd-time-wait-sync.service
-
 
 duration=$SECONDS
 minutes=$(((duration % 3600) / 60))
