@@ -213,18 +213,18 @@ for alias_name in "${!aliases[@]}"; do
 done
 
 ########## mavlink-router ##########
-./setup/install_mavlink_router.sh
+./scripts/install_mavlink_router.sh
 
 ########## dds-agent ##########
 if [ "$INSTALL_DDS_AGENT" = "y" ]; then
-	./setup/install_dds_agent.sh
+	./scripts/install_dds_agent.sh
 fi
 
 ########## Always install MAVSDK ##########
-./setup/install_mavsdk.sh
+./scripts/install_mavsdk.sh
 
 ########## mavsdk-examples ##########
-./setup/install_mavsdk_examples.sh
+./scripts/install_mavsdk_examples.sh
 
 ########## hotspot-control ##########
 service_uninstall hotspot-control
@@ -233,28 +233,28 @@ service_install hotspot-control
 
 ########## logloader ##########
 if [ "$INSTALL_LOGLOADER" = "y" ]; then
-	./setup/install_logloader.sh
-	./setup/install_flight_review.sh
+	./scripts/install_logloader.sh
+	./scripts/install_flight_review.sh
 fi
 
 ########## polaris-client-mavlink ##########
 if [ "$INSTALL_POLARIS" = "y" ]; then
-	./setup/install_polaris.sh
+	./scripts/install_polaris.sh
 fi
 
 ########## rtsp-server ##########
 if [ "$INSTALL_RTSP_SERVER" = "y" ]; then
-	./setup/install_rtsp_server.sh
+	./scripts/install_rtsp_server.sh
 fi
 
 ########## rid-transmitter ##########
 if [ "$INSTALL_RID_TRANSMITTER" = "y" ]; then
-	./setup/install_rid_transmitter.sh
+	./scripts/install_rid_transmitter.sh
 fi
 
 ########## ark-ui ##########
 if [ "$INSTALL_ARK_UI" = "y" ]; then
-	./setup/install_ark_ui.sh
+	./scripts/install_ark_ui.sh
 fi
 
 ########## jetson specific services -- these services run as root ##########
