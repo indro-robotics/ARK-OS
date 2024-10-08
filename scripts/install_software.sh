@@ -102,6 +102,11 @@ else
 	fi
 fi
 
+########## validate submodules ##########
+git submodule update --init --recursive
+git submodule foreach git reset --hard
+git submodule foreach git clean -fd
+
 ########## install dependencies ##########
 echo "Installing dependencies"
 sudo apt-get update
