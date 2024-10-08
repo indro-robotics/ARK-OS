@@ -17,19 +17,24 @@ cd $PROJECT_ROOT/submodules/ark-ui
 popd
 
 NGINX_CONFIG_FILE_PATH="/etc/nginx/sites-available/ark-ui"
-DEPLOY_PATH="$XDG_DATA_HOME/ark-ui"
+# DEPLOY_PATH="$XDG_DATA_HOME/ark-ui"
+DEPLOY_PATH="/var/www/ark-ui"
 
 # Copy nginx config
 sudo cp "$COMMON_DIR/ark-ui.nginx" $NGINX_CONFIG_FILE_PATH
 
 # Modify the Nginx config to set the correct root path based on the user
-sudo sed -i "s|^\([[:space:]]*root\) .*;|\1 $DEPLOY_PATH/html;|" $NGINX_CONFIG_FILE_PATH
+# sudo sed -i "s|^\([[:space:]]*root\) .*;|\1 $DEPLOY_PATH/html;|" $NGINX_CONFIG_FILE_PATH
 
 # Copy frontend and backend files to deployment path
 mkdir -p $DEPLOY_PATH/html
 mkdir -p $DEPLOY_PATH/api
 cp -r $PROJECT_ROOT/submodules/ark-ui/ark-ui/dist/* $DEPLOY_PATH/html/
 cp -r $PROJECT_ROOT/submodules/ark-ui/backend/* $DEPLOY_PATH/api/
+
+# Set permissions: www-data owns the path and has read/write permissions
+sudo chown -R www-data:www-data $DEPLOY_PATH
+sudo chmod -R 755 $DEPLOY_PATH
 
 if [ ! -L /etc/nginx/sites-enabled/ark-ui ]; then
   sudo ln -s $NGINX_CONFIG_FILE_PATH /etc/nginx/sites-enabled/ark-ui
@@ -38,11 +43,8 @@ fi
 # Remove default configuration
 sudo rm /etc/nginx/sites-enabled/default &>/dev/null
 
-# add nginx user to $USER group
-sudo usermod -aG $USER www-data
-
 # To check that it can run
-stat $DEPLOY_PATH
+sudo -u www-data stat $DEPLOY_PATH
 
 # Test the configuration and restart nginx
 sudo nginx -t
