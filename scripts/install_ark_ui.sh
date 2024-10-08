@@ -27,10 +27,10 @@ sudo cp "$COMMON_DIR/ark-ui.nginx" $NGINX_CONFIG_FILE_PATH
 # sudo sed -i "s|^\([[:space:]]*root\) .*;|\1 $DEPLOY_PATH/html;|" $NGINX_CONFIG_FILE_PATH
 
 # Copy frontend and backend files to deployment path
-mkdir -p $DEPLOY_PATH/html
-mkdir -p $DEPLOY_PATH/api
-cp -r $PROJECT_ROOT/submodules/ark-ui/ark-ui/dist/* $DEPLOY_PATH/html/
-cp -r $PROJECT_ROOT/submodules/ark-ui/backend/* $DEPLOY_PATH/api/
+sudo mkdir -p $DEPLOY_PATH/html
+sudo mkdir -p $DEPLOY_PATH/api
+sudo cp -r $PROJECT_ROOT/submodules/ark-ui/ark-ui/dist/* $DEPLOY_PATH/html/
+sudo cp -r $PROJECT_ROOT/submodules/ark-ui/backend/* $DEPLOY_PATH/api/
 
 # Set permissions: www-data owns the path and has read/write permissions
 sudo chown -R www-data:www-data $DEPLOY_PATH
