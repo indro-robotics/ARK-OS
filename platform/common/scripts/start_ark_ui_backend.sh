@@ -7,5 +7,5 @@ source $NVM_DIR/nvm.sh
 nvm use 20.15.0
 
 # Start your application
-cd /var/www/ark-ui/api
+cd ~/.local/share/ark-ui/api
 npm start
