@@ -23,7 +23,7 @@ DEPLOY_PATH="$XDG_DATA_HOME/ark-ui"
 sudo cp "$COMMON_DIR/ark-ui.nginx" $NGINX_CONFIG_FILE_PATH
 
 # Modify the Nginx config to set the correct root path based on the user
-sudo sed -i "s|^[[:space:]]*root .*;|root $DEPLOY_PATH/html;|" $NGINX_CONFIG_FILE_PATH
+sudo sed -i "s|^\([[:space:]]*root\) .*;|\1 $DEPLOY_PATH/html;|" $NGINX_CONFIG_FILE_PATH
 
 # Copy frontend and backend files to deployment path
 mkdir -p $DEPLOY_PATH/html
