@@ -5,7 +5,6 @@ After=syslog.target network.target nginx.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/flight_review/
 ExecStart=%h/.local/bin/start_flight_review.sh
 Restart=always
 RestartSec=5
