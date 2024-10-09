@@ -257,7 +257,7 @@ if [ "$INSTALL_ARK_UI" = "y" ]; then
 	./scripts/install_ark_ui.sh
 fi
 
-########## jetson specific services -- these services run as root ##########
+########## jetson specific services ##########
 if [ "$TARGET" = "jetson" ]; then
 
 	########## rid-transmitter ##########
@@ -265,6 +265,7 @@ if [ "$TARGET" = "jetson" ]; then
 		./scripts/install_rid_transmitter.sh
 	fi
 
+	# these services run as root
 	echo "Installing Jetson services"
 	sudo cp $TARGET_DIR/services/jetson-can.service /etc/systemd/system/
 	sudo cp $TARGET_DIR/services/jetson-clocks.service /etc/systemd/system/
