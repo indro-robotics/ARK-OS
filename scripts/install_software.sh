@@ -252,11 +252,6 @@ if [ "$INSTALL_RTSP_SERVER" = "y" ]; then
 	./scripts/install_rtsp_server.sh
 fi
 
-########## rid-transmitter ##########
-if [ "$INSTALL_RID_TRANSMITTER" = "y" ]; then
-	./scripts/install_rid_transmitter.sh
-fi
-
 ########## ark-ui ##########
 if [ "$INSTALL_ARK_UI" = "y" ]; then
 	./scripts/install_ark_ui.sh
@@ -264,6 +259,12 @@ fi
 
 ########## jetson specific services -- these services run as root ##########
 if [ "$TARGET" = "jetson" ]; then
+
+	########## rid-transmitter ##########
+	if [ "$INSTALL_RID_TRANSMITTER" = "y" ]; then
+		./scripts/install_rid_transmitter.sh
+	fi
+
 	echo "Installing Jetson services"
 	sudo cp $TARGET_DIR/services/jetson-can.service /etc/systemd/system/
 	sudo cp $TARGET_DIR/services/jetson-clocks.service /etc/systemd/system/
