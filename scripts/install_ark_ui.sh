@@ -17,7 +17,6 @@ cd $PROJECT_ROOT/submodules/ark-ui
 popd
 
 NGINX_CONFIG_FILE_PATH="/etc/nginx/sites-available/ark-ui"
-# DEPLOY_PATH="$XDG_DATA_HOME/ark-ui"
 DEPLOY_PATH="/var/www/ark-ui"
 
 # Copy nginx config

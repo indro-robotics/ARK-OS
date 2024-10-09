@@ -276,6 +276,8 @@ fi
 
 sudo systemctl enable systemd-time-wait-sync.service
 
+sync
+
 duration=$SECONDS
 minutes=$(((duration % 3600) / 60))
 seconds=$((duration % 60))
