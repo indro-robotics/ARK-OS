@@ -13,30 +13,30 @@ This script can be safely run multiple times to update your system.
 
 
 ## Services
-When running the **install.sh** script you will be prompted to install the below services. The services are installed as [systemd user services](https://www.unixsysadmin.com/systemd-user-services/) and conform to the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/index.html). If yo
+When running the **install.sh** script you will be prompted to install the below services. The services are installed as [systemd user services](https://www.unixsysadmin.com/systemd-user-services/) and conform to the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/index.html).
 
 ### Jetson and Pi
 
 **mavlink-router.service** <br>
-This service enables mavlink-router to route mavlink packets between endpoints. The **platform/`target`/main.conf** file defines these endpoints and is installed at **~/.local/share/mavlink-router/main.conf**. The USB on the FMU is connected directly to the companion for a reliable high speed chip to chip connection.
+This service enables mavlink-router to route mavlink packets from the Flight Controller USB port to user defined UDP endpoints. The **platform/`target`/main.conf** file defines these endpoints and is installed at **~/.local/share/mavlink-router/main.conf**. The **main.conf** can also be updated using the ARK UI service configuration editor.
 
 **dds-agent.service** <br>
-Bridges PX4 uORB pub/sub with ROS2. This service starts the DDS agent which connects with the PX4 uXRCE-DDS-Client. The FMU `Telem1` port is connected directly to the Jetson UART. This service depends on the `systemd-timesyncd` service to synchronize system time with an accurate remote reference time source.
+The dds-agent service bridges the PX4 uORB pub/sub system to ROS2 topics on the Pi. The bridged topics are defined in PX4 Firmware and can be [found here](https://github.com/PX4/PX4-Autopilot/blob/main/src/modules/uxrce_dds_client/dds_topics.yaml). The **dds-agent** runs the [micro-xrce-dds-agent](https://github.com/eProsima/Micro-XRCE-DDS-Agent) over the high speed serial connection between Flight Controller and Companion.
 
 **logloader.service** <br>
 This service downloads log files from the SD card of the flight controller via MAVLink and optionally uploads them to [PX4 Flight Review](https://review.px4.io/). <br>
 
 **flight-review.service** <br>
-This service hosts a local PX4 Flight Review server on port 5006 <br>
+This service hosts a local PX4 Flight Review server on port 5006. All logs downloaded with **logloader** are available here. <br>
 
 **rtsp-server.service** <br>
-This service provides an RTSP server via gstreamer using a Pi cam at **rtsp://`target`.local:8554/fpv** <br>
+This service provides an RTSP server via gstreamer **rtsp://`hostname`.local:8554/camera1** <br>
 
 **polaris.service** <br>
 This service receives RTCM corrections from the PointOne GNSS Corrections service and publishes them via MAVLink.
 
 **ark-ui-backend.service** <br>
-This service provides an express backend for the ark-ui configuration UI. The ARK UI is hosted via nginx at **`target`.local** and provides tools such as firmware updating, wifi hotspot configuration, log viewing (coming soon), and more.
+This service provides a REST API backend for ARK-UI. The ARK UI frontend is hosted using nginx at **`hostname`.local** and provides tools such as Flight Controller firmware updating, wifi configuration, log viewing, and more.
 
 **hotspot-control.service** <br>
 This service creates a hotspot after booting if the device is unable to auto connect to a network. You can then use the ARK UI to configure your network.
