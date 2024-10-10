@@ -1,4 +1,4 @@
-ARK-OS is a collection of software packages that provide common tools for drone systems. These software packages are installed as systemd user services and provide useful features such as mavlink routing, video streaming, automatic log upload, firmware updating and more.
+ARK-OS is a collection of software and tools for drones. These software packages are installed as [systemd user services](https://www.unixsysadmin.com/systemd-user-services/) and provide essential features such as mavlink routing, video streaming, automatic flight log upload, flight controller firmware updating, network RTK corrections, and more.
 
 # Getting started
 Run the install script on the device. This script will prompt you Y/N to install various software. You can skip the interactive prompt by copying the **default.env** file and renaming it **user.env**. You can adjust the options in the **user.env**.
