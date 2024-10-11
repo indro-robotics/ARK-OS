@@ -1,11 +1,13 @@
 ARK-OS is a collection of software and tools for drones. These software packages provide essential features such as mavlink routing, video streaming, automatic flight log upload, flight controller firmware updating, network RTK corrections, and more.
 
+![alt text](ark-ui.png)
+
 # Getting started
-Run the install script on the device. This script will prompt you Y/N to install various software. You can skip the interactive prompt by copying the **default.env** file and renaming it **user.env**. You can adjust the options in the **user.env**.
+Run the install script on the device. You will be prompted y/n to install the packages, you can press enter to skip and use the reccomended defaults.
 ```
 ./install.sh
 ```
-This script can be safely run multiple times to update your system.
+You can skip the interactive prompt by copying the **default.env** file and renaming it **user.env**. You can adjust the options in the **user.env**.This script can be safely run multiple times to update your system.
 
 #### Supported targets
 - **ARK Jetson Carrier** <br> https://arkelectron.com/product/ark-jetson-pab-carrier/
@@ -15,7 +17,7 @@ This script can be safely run multiple times to update your system.
 ## Services
 When running the **install.sh** script you will be prompted to install the below services. The services are installed as [systemd user services](https://www.unixsysadmin.com/systemd-user-services/) and conform to the [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/latest/index.html).
 
-### Jetson and Pi
+## Jetson and Pi
 
 **mavlink-router.service** <br>
 This service enables mavlink-router to route mavlink packets from the Flight Controller USB port to user defined UDP endpoints. The **platform/`target`/main.conf** file defines these endpoints and is installed at **~/.local/share/mavlink-router/main.conf**. The **main.conf** can also be updated using the ARK UI service configuration editor.
