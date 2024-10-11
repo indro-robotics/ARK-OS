@@ -13,7 +13,7 @@ Run the install script on the device. You will be prompted y/n to install the se
 You can skip the interactive prompt by copying the **default.env** file and renaming it **user.env**. You can adjust the options in the **user.env**. This script can be safely run multiple times to update your system.
 
 ## ARK-UI
-A web based UI is provided to more easily manage your device. The main page shows the status of the services and includes controls to edit their settings, start/stop, and view journal log files. There are also pages to manage your network connections and update the flight controller firmware.
+A web based UI is provided to more easily manage your device. The main page shows the status of the services and includes controls to edit their settings, start/stop, and view journal log files. There are also pages to manage your network connections and update the flight controller firmware. The webpage is hosted with nginx and is available at http://jetson.local or http://pi6x.local.
 
 ![alt text](ark-ui.png)
 
@@ -29,10 +29,10 @@ This service enables mavlink-router to route mavlink packets from the flight con
 The dds-agent service bridges the PX4 uORB pub/sub system to ROS2 topics on the Pi. The bridged topics are defined in PX4 Firmware and can be [found here](https://github.com/PX4/PX4-Autopilot/blob/main/src/modules/uxrce_dds_client/dds_topics.yaml). The **dds-agent** runs the [micro-xrce-dds-agent](https://github.com/eProsima/Micro-XRCE-DDS-Agent) over the high speed serial connection between flight controller and Companion.
 
 **logloader.service** <br>
-This service downloads log files from the SD card of the flight controller via MAVLink and optionally uploads them to [PX4 Flight Review](https://review.px4.io/). <br>
+This service downloads log files from the SD card of the flight controller via MAVLink and optionally uploads them to [PX4 Flight Review](https://review.px4.io/).
 
 **flight-review.service** <br>
-This service hosts a local PX4 Flight Review server on port 5006. All logs downloaded with logloader are available here. <br>
+This service hosts a local PX4 Flight Review server on port 5006. All logloader downloaded logs are available here.
 
 **rtsp-server.service** <br>
 This service provides an RTSP server via gstreamer. The stream from the first connected CSI camera can be accessed by default at `rtsp://<hostname>.local:5600/camera1`.
@@ -41,10 +41,10 @@ This service provides an RTSP server via gstreamer. The stream from the first co
 This service receives RTCM corrections from the PointOne GNSS Corrections service and publishes them to the flight controller via MAVLink.
 
 **ark-ui-backend.service** <br>
-This service provides a REST API backend for ARK-UI. The ARK-UI frontend is hosted using nginx at `<hostname>.local` and provides tools such as flight controller firmware updating, wifi configuration, log viewing, and more.
+This service provides a REST API backend for ARK-UI.
 
 **hotspot-control.service** <br>
-This service creates a hotspot after booting if the device is unable to auto connect to a network. You can then use the ARK-UI to put the device into Station mode and connect to your local WiFi.
+This service creates a WiFi Hotspot if the device is unable to connect to a WiFi network within 1 minute after booting. You can then use the ARK-UI to put the device into Station mode and connect to your local WiFi network. The default ssid and password are `<serialnumber>-<hostname` and `password`.
 
 ### Jetson only
 
