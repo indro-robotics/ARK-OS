@@ -30,7 +30,7 @@ When running the **install.sh** script you will be prompted to install the below
 This service enables mavlink-router to route mavlink packets from the flight controller USB port to user defined UDP endpoints. You can add and remove endpoints using the service configuration enditor in the UI.
 
 **dds-agent.service** <br>
-The dds-agent service bridges the PX4 uORB pub/sub system to ROS2 topics on the Pi. The bridged topics are defined in PX4 Firmware and can be [found here](https://github.com/PX4/PX4-Autopilot/blob/main/src/modules/uxrce_dds_client/dds_topics.yaml). The **dds-agent** runs the [micro-xrce-dds-agent](https://github.com/eProsima/Micro-XRCE-DDS-Agent) over the high speed serial connection between flight controller and Companion.
+The dds-agent service bridges the PX4 uORB and ROS2 topics. The bridged topics are defined in PX4 Firmware and can be [found here](https://github.com/PX4/PX4-Autopilot/blob/main/src/modules/uxrce_dds_client/dds_topics.yaml). The **dds-agent** runs the [micro-xrce-dds-agent](https://github.com/eProsima/Micro-XRCE-DDS-Agent) over the high speed serial connection between flight controller and Companion.
 
 **logloader.service** <br>
 This service downloads log files from the SD card of the flight controller via MAVLink and optionally uploads them to [PX4 Flight Review](https://review.px4.io/).
