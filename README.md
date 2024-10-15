@@ -48,7 +48,7 @@ This service receives RTCM corrections from the PointOne GNSS Corrections servic
 This service provides a REST API backend for ARK-UI.
 
 **hotspot-control.service** <br>
-This service creates a WiFi Hotspot if the device is unable to connect to a WiFi network within 1 minute after booting. You can then use the ARK-UI to put the device into Station mode and connect to your local WiFi network. The default ssid and password are `<serialnumber>-<hostname` and `password`.
+This service creates a WiFi Hotspot if the device is unable to connect to a WiFi network within 1 minute after booting. You can then use the ARK-UI to put the device into Station mode and connect to your local WiFi network. The default ssid and password are `<serialnumber>-<hostname>` and `password`.
 
 ### Jetson only
 
