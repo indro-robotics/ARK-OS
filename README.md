@@ -6,6 +6,10 @@ ARK-OS is a collection of software services and tools for drones. These services
 - **ARK Pi6X Flow** <br> https://arkelectron.com/product/ark-pi6x-flow/
 
 # Getting started
+Clone this repository on the device
+```
+git clone --recurse-submodules https://github.com/ARK-Electronics/ARK-OS.git
+```
 Run the install script on the device. You will be prompted y/n to install the services, you can press enter to skip and use the recommended defaults.
 ```
 ./install.sh
