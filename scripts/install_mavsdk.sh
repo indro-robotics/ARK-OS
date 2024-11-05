@@ -2,7 +2,8 @@
 source $(dirname $BASH_SOURCE)/functions.sh
 
 # Check if we are on 20.04 or 22.04
-if [ "$(lsb_release -cs)" = "focal" ]; then
+codename=$(lsb_release -c | awk '{print $2}')
+if [ "$codename" = "focal" ]; then
 	echo "Ubuntu 20.04 detected, building MAVSDK from source"
 	pushd .
 	sudo rm -rf ~/code/MAVSDK
@@ -13,8 +14,8 @@ if [ "$(lsb_release -cs)" = "focal" ]; then
 	sudo cmake --build build/default --target install
 	sudo ldconfig
 	popd
-elif [ "$(lsb_release -cs)" = "jammy" ]; then
-	echo "Ubuntu 22.04 detected, Downloading the latest release of mavsdk"
+if [ "$codename" = "jammy" ] || [ "$codename" = "bookworm" ]; then
+	echo "Debian 12 detected, downloading the latest release of mavsdk"
 	release_info=$(curl -s https://api.github.com/repos/mavlink/MAVSDK/releases/latest)
 	# Assumes arm64
 	download_url=$(echo "$release_info" | grep "browser_download_url.*debian12_arm64.deb" | awk -F '"' '{print $4}')
