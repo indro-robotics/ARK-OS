@@ -14,7 +14,7 @@ if [ "$codename" = "focal" ]; then
 	sudo cmake --build build/default --target install
 	sudo ldconfig
 	popd
-if [ "$codename" = "jammy" ] || [ "$codename" = "bookworm" ]; then
+elif [ "$codename" = "jammy" ] || [ "$codename" = "bookworm" ]; then
 	echo "Debian 12 detected, downloading the latest release of mavsdk"
 	release_info=$(curl -s https://api.github.com/repos/mavlink/MAVSDK/releases/latest)
 	# Assumes arm64
