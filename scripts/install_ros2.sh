@@ -23,10 +23,10 @@ fi
 
 echo "WARNING: install opencv from source first! Run:  ./install_opencv.sh"
 
-# Download ARK ros2_ws
-git clone --recurse-submodules https://github.com/ARK-Electronics/ros2_jetpack6_ws.git ~/code/ros2_jetpack6_ws
-cd ~/code/ros2_jetpack6_ws
-sudo rosdep init
-rosdep update
-rosdep install -r --from-paths src -i -y --rosdistro humble
-colcon build
+# # Download ARK ros2_ws
+# git clone --recurse-submodules https://github.com/ARK-Electronics/ros2_jetpack6_ws.git ~/code/ros2_jetpack6_ws
+# cd ~/code/ros2_jetpack6_ws
+# sudo rosdep init
+# rosdep update
+# rosdep install -r --from-paths src -i -y --rosdistro humble
+# colcon build
