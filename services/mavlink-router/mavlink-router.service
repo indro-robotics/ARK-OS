@@ -1,13 +1,17 @@
 [Unit]
 Description=Mavlink Router
-Wants=network.target
-After=network-online.target syslog.target
+After=network-online.target
 
 [Service]
-Type=exec
-ExecStart=%h/.local/bin/start_mavlink_router.sh
+Type=simple
+ExecStart=/home/%u/.local/bin/start_mavlink_router.sh
 Restart=on-failure
 RestartSec=5
+Environment="PATH=/home/%u/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="HOME=/home/%u"
+WorkingDirectory=/home/%u
+User=%u
 
 [Install]
 WantedBy=default.target
+
