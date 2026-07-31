@@ -370,8 +370,18 @@ done
 echo "Installing services..."
 ./tools/service_control.sh install
 
-########## Ensure time synchronization ##########
-sudo systemctl enable systemd-time-wait-sync.service
+########## Time synchronization ##########
+# Deliberately NOT enabling systemd-time-wait-sync.service. Ubuntu ships it disabled; leave it.
+#
+# It checks the clock once at boot via adjtimex. If the clock is not synced yet it falls back to
+# an inotify wait on /run/systemd/timesync/synchronized - a file only systemd-timesyncd writes -
+# and never re-checks adjtimex. With TimeoutStartSec=infinity and DefaultDependencies=no it then
+# wedges the systemd job queue for the whole boot, blocking deb-systemd-invoke, dpkg and apt.
+# Symptom: install/upgrade hangs silently with no error.
+#
+# Triggers on any boot where the clock cannot sync in time - chrony in place of timesyncd, or
+# simply no network, i.e. a deployed drone. Nothing here orders After=time-sync.target (not PX4,
+# not uXRCE-DDS, not the ARID services), so the gate protects nothing.
 
 sync
 
