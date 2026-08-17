@@ -107,6 +107,7 @@ class MAVLinkConnection:
             "current": 0.0,
             "remaining": 0,
             "mavlink_connected": False,
+            "armed": False,
             "device_connected": False,
             "in_bootloader": False,
             "device_name": None,
@@ -230,7 +231,12 @@ class MAVLinkConnection:
                     last_device_check_time = current_time
 
                 if self.mav_connection is None:
+                    # A failed reset below nulls the connection; without retrying here the loop
+                    # spins on a dead link forever and never reports connected again.
                     time.sleep(1)
+                    if self.connect():
+                        waiting_for_heartbeat = True
+                        connection_attempts = 0
                     continue
 
                 # Use blocking mode with a timeout - this is more efficient than sleep
@@ -248,6 +254,8 @@ class MAVLinkConnection:
                     # Process different message types
                     if msg.get_type() == 'HEARTBEAT':
                         self.update_heartbeat_time()
+                        # MAV_MODE_FLAG_SAFETY_ARMED; last-known verdict survives link loss
+                        self.autopilot_data["armed"] = bool(msg.base_mode & 0x80)
                         self.autopilot_data["autopilot_type"] = self.get_autopilot_type(msg.autopilot)
                         self.autopilot_data["mavlink_connected"] = True
 
@@ -545,7 +553,9 @@ class AutopilotManager:
 
         # Reset FMU to enter bootloader mode
         logger.debug("Resetting FMU to enter bootloader mode")
-        self.reset_fmu(mode="wait_bl")
+        ok, msg = self.reset_fmu(mode="wait_bl")
+        if not ok:
+            logger.error(msg)
 
         # Run px_uploader.py with JSON progress output
         logger.debug(f"Starting firmware upload using px_uploader.py")
@@ -588,7 +598,9 @@ class AutopilotManager:
 
             # Reset FMU quickly after flashing
             logger.debug("Performing fast reset of FMU")
-            self.reset_fmu(mode="fast")
+            ok, msg = self.reset_fmu(mode="fast")
+            if not ok:
+                logger.error(msg)
 
             # Wait for the reset to complete
             logger.debug("Waiting for reset to complete")
@@ -628,7 +640,11 @@ class AutopilotManager:
                 logger.debug("Attempting to restart mavlink-router after exception")
                 self.restart_mavlink_router()
                 time.sleep(2)
-                self.mavlink.connect()
+
+            # The MAVLink link was disconnected before the flash regardless of the router's
+            # state, so reconnect on every exception path or /details stays dead until a
+            # service restart.
+            self.mavlink.connect()
 
             return False
 
@@ -646,10 +662,24 @@ def get_autopilot_details():
     return jsonify(details)
 
 
+def _armed_refusal():
+    # Reset and flash must not run while the vehicle is armed. No heartbeat ever seen
+    # (bench, bootloader) allows.
+    if app.autopilot_manager.mavlink.autopilot_data.get("armed"):
+        logger.error("vehicle armed: FMU reset/flash refused")
+        return jsonify({"success": False,
+                        "message": "vehicle armed: FMU reset/flash refused"}), 409
+    return None
+
+
 @app.route('/firmware-upload', methods=['POST'])
 def upload_firmware():
     """Upload and flash firmware to the autopilot"""
     logger.info("POST /firmware-upload called")
+
+    refusal = _armed_refusal()
+    if refusal:
+        return refusal
 
     if 'firmware' not in request.files:
         logger.warning("No firmware file provided in request")
@@ -698,6 +728,10 @@ def reset_fmu():
     """Reset the flight controller"""
     logger.info("POST /reset-fmu called")
 
+    refusal = _armed_refusal()
+    if refusal:
+        return refusal
+
     success, message = app.autopilot_manager.reset_fmu(mode="fast")
 
     if success:
@@ -710,6 +744,10 @@ def reset_fmu():
 def reset_fmu_bootloader():
     """Reset the flight controller into bootloader mode"""
     logger.info("POST /reset-fmu-bootloader called")
+
+    refusal = _armed_refusal()
+    if refusal:
+        return refusal
 
     success, message = app.autopilot_manager.reset_fmu(mode="wait_bl")
 
