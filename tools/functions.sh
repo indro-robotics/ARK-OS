@@ -8,7 +8,7 @@ PROJECT_ROOT="$( cd "$SCRIPT_DIR/.." &> /dev/null && pwd )"
 export PROJECT_ROOT
 
 # Refresh sudo credentials
-sudo -v
+sudo true
 
 # Setup XDG environment variables
 DEFAULT_XDG_CONF_HOME="$HOME/.config"

@@ -54,7 +54,7 @@ source $(dirname $BASH_SOURCE)/functions.sh
 
 function sudo_refresh_loop() {
 	while true; do
-		sudo -v
+		sudo -n true
 		sleep 5
 	done
 }
@@ -108,7 +108,7 @@ function cleanup() {
 trap cleanup SIGINT SIGTERM
 
 # keep sudo credentials alive in the background
-sudo -v
+sudo true
 sudo_refresh_loop &
 SUDO_PID=$!
 
