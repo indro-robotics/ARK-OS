@@ -3,11 +3,15 @@ Description=Micro-XRCE-DDS-Agent
 Wants=network.target
 After=dev-ttyTHS1.device dev-ttyAMA4.device syslog.target network-online.target
 
+# No start limit: a crash burst must keep retrying, loudly, not die into
+# 'failed' and silently drop the FMU link.
+StartLimitIntervalSec=0
+
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/start_dds_agent.sh
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=10
 ExecStartPre=/bin/sleep 2
 
 [Install]

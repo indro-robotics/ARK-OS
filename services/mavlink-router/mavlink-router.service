@@ -2,11 +2,15 @@
 Description=Mavlink Router
 After=network-online.target
 
+# No start limit: a crash burst must keep retrying, loudly, not die into
+# 'failed' and silently drop the FMU link.
+StartLimitIntervalSec=0
+
 [Service]
 Type=simple
 ExecStart=/home/jetson/.local/bin/start_mavlink_router.sh
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=10
 
 Environment=PATH=/home/jetson/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WorkingDirectory=/home/jetson
