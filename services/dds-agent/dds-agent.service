@@ -11,7 +11,7 @@ StartLimitIntervalSec=0
 Type=simple
 ExecStart=%h/.local/bin/start_dds_agent.sh
 Restart=always
-RestartSec=10
+RestartSec=30
 ExecStartPre=/bin/sleep 2
 
 [Install]

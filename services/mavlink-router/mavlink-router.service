@@ -10,7 +10,7 @@ StartLimitIntervalSec=0
 Type=simple
 ExecStart=/home/jetson/.local/bin/start_mavlink_router.sh
 Restart=always
-RestartSec=10
+RestartSec=30
 
 Environment=PATH=/home/jetson/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WorkingDirectory=/home/jetson
