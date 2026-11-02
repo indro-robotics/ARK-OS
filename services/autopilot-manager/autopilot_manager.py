@@ -17,6 +17,9 @@ Time sync with the FC is bidirectional but mutually exclusive: once the local
 clock is NTP-synchronized it is pushed to the FC (send_system_time), and while it
 is not, a valid GNSS-derived SYSTEM_TIME from the FC steps the local clock
 (_maybe_step_clock_from_fc; CAP_SYS_TIME comes from the systemd unit).
+
+The reset and flash routes answer 409 while the last heartbeat reported the vehicle
+armed (refuse_while_armed); a board that has never sent a heartbeat is not refused.
 """
 
 import os
@@ -214,6 +217,7 @@ class MAVLinkConnection:
             "current": 0.0,
             "remaining": 0,
             "mavlink_connected": False,
+            "armed": False,
             "device_connected": False,
             "in_bootloader": False,
             "device_name": None,
@@ -291,6 +295,11 @@ class MAVLinkConnection:
             return False
 
         return time.monotonic() - self._last_heartbeat_mono < self.heartbeat_timeout
+
+    def is_armed(self) -> bool:
+        """Last heartbeat's MAV_MODE_FLAG_SAFETY_ARMED; False until one is seen."""
+        with self._lock:
+            return bool(self.autopilot_data["armed"])
 
     def invalidate_version(self):
         """Drop the cached version/git hash so the message loop re-requests them.
@@ -461,7 +470,18 @@ class MAVLinkConnection:
                     last_device_check_time = now_mono
 
                 if self.mav_connection is None:
+                    # A failed rebuild below nulls the link; without a retry here the loop
+                    # spins on a dead link for the life of the process.
                     time.sleep(1)
+                    if not self.running:
+                        break
+                    if now_mono >= next_reset_time:
+                        try:
+                            self._reset_connection()
+                        except Exception as reset_error:
+                            logger.error(f"Error rebuilding MAVLink connection: {reset_error}")
+                        next_reset_time = now_mono + reset_backoff
+                        reset_backoff = min(reset_backoff * 2, self._MAX_RESET_BACKOFF)
                     continue
 
                 # Use blocking mode with a timeout - this is more efficient than sleep
@@ -479,6 +499,8 @@ class MAVLinkConnection:
                         with self._lock:
                             self.autopilot_data["autopilot_type"] = self.get_autopilot_type(msg.autopilot)
                             self.autopilot_data["mavlink_connected"] = True
+                            # The last verdict survives link loss: a reset is refused until a heartbeat says disarmed.
+                            self.autopilot_data["armed"] = bool(msg.base_mode & mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
 
                         # Recovered: log once and reset the backoff so the next
                         # drop is reported promptly and probed without delay.
@@ -598,6 +620,8 @@ class MAVLinkConnection:
                 logger.warning(f"Connection reset: {cre}")
                 # Give a short pause before attempting reconnection
                 time.sleep(1)
+                if not self.running:
+                    break
                 try:
                     self._reset_connection()
                     reset_backoff = self._INITIAL_RESET_BACKOFF
@@ -765,6 +789,7 @@ class AutopilotManager:
         subscribers. The caller must hold the flash slot (try_claim_flash);
         it is released here when the flash finishes."""
         logger.info(f"Starting firmware flash process for {firmware_path}")
+        link_dropped = False
 
         try:
             # Check if firmware file exists
@@ -787,6 +812,7 @@ class AutopilotManager:
             # Disconnect from MAVLink first to avoid conflicts
             logger.debug("Disconnecting MAVLink connection")
             self.mavlink.disconnect()
+            link_dropped = True
             # disconnect() stops the message loop, so the heartbeat-gap path that
             # normally invalidates the version cannot run during a flash.
             self.mavlink.invalidate_version()
@@ -909,6 +935,10 @@ class AutopilotManager:
                 return False
         finally:
             self.release_flash()
+            # Whatever path left the flash, the link dropped for it comes back here, or
+            # /details and the armed gate stay dead until a service restart.
+            if link_dropped:
+                self.mavlink.connect()
             # Clean up temp firmware file
             try:
                 if os.path.isfile(firmware_path):
@@ -935,11 +965,27 @@ def get_autopilot_details() -> AutopilotDetails:
     return get_manager().get_autopilot_details()
 
 
+ARMED_REFUSAL = "vehicle armed: FMU reset/flash refused"
+
+
+def refuse_while_armed(response: Response) -> bool:
+    """Reset and flash never run on an armed vehicle: 409 while the last heartbeat
+    reported armed. No heartbeat ever seen (bench, bootloader) allows."""
+    if get_manager().mavlink.is_armed():
+        logger.error(ARMED_REFUSAL)
+        response.status_code = 409
+        return True
+    return False
+
+
 @app.post("/firmware-upload")
 def upload_firmware(firmware: UploadFile, response: Response) -> UploadResponse:
     """Upload firmware and start flashing in the background. Progress is
     streamed to /firmware-upload/stream subscribers."""
     logger.info("POST /firmware-upload called")
+
+    if refuse_while_armed(response):
+        return UploadResponse(status="fail", message=ARMED_REFUSAL)
 
     # Check if the file has an allowed extension
     allowed_extensions = ['.px4', '.apj']
@@ -1019,6 +1065,9 @@ def reset_fmu(response: Response) -> MessageResponse:
     """Reset the flight controller"""
     logger.info("POST /reset-fmu called")
 
+    if refuse_while_armed(response):
+        return MessageResponse(success=False, message=ARMED_REFUSAL)
+
     success, message = get_manager().reset_fmu(mode="fast")
     if not success:
         response.status_code = 500
@@ -1029,6 +1078,9 @@ def reset_fmu(response: Response) -> MessageResponse:
 def reset_fmu_bootloader(response: Response) -> MessageResponse:
     """Reset the flight controller into bootloader mode"""
     logger.info("POST /reset-fmu-bootloader called")
+
+    if refuse_while_armed(response):
+        return MessageResponse(success=False, message=ARMED_REFUSAL)
 
     success, message = get_manager().reset_fmu(mode="wait_bl")
     if not success:
