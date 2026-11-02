@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+# Install (or update) ARK-OS on a live, already-flashed device.
+#
+# This is the live-system counterpart to ark_jetson_kernel/provision.sh, which
+# bakes the same packages into a Jetson image at build time (--provision). It
+# performs the installs a plain `apt install ./ark-os-*.deb` does NOT do itself:
+#
+#   1. jetson-stats   — the jtop client system-manager uses for the web UI's
+#      (Jetson only)    Jetson stats. Not an apt Depends and not in the bundled
+#                       venv (the venv imports it via system-site-packages).
+#   2. ark-os-<plat>  — the package itself; its postinst does the rest. apt pulls
+#                       the remaining Depends (nginx, gstreamer, bluez, …) from
+#                       the device's normal Ubuntu repos.
+#
+# MAVSDK is not installed here: the ark-os .deb bundles its own SDK under
+# /usr/lib/ark-os/mavsdk (issue #74), independent of any system MAVSDK.
+#
+# Re-running is safe: jetson-stats is skipped when already at the pinned version,
+# and re-installing the ark-os deb upgrades (or downgrades) it in place — so this
+# is also the supported way to update a live device.
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Pinned versions: versions.env is the single source of truth (shared with
+# build.sh and the CI workflow). Flags/env override it, which also lets this
+# script run when downloaded on its own, without a repo checkout.
+# shellcheck source=packaging/versions.env
+[ -f "$SCRIPT_DIR/versions.env" ] && source "$SCRIPT_DIR/versions.env"
+
+ARK_OS_REPO="https://github.com/ARK-Electronics/ARK-OS"
+
+die()  { echo "ERROR: $*" >&2; exit 1; }
+warn() { echo "WARNING: $*" >&2; }
+info() { echo "==> $*"; }
+
+usage() {
+    cat >&2 <<'EOF'
+Usage: sudo ./install_ark_os.sh [options] [ARK_OS_DEB]
+
+Installs jetson-stats (Jetson only) and ARK-OS on a live device in the correct
+order. Also the supported way to update a live device. (MAVSDK is bundled inside
+the ark-os package and is no longer installed separately.)
+
+Positional:
+  ARK_OS_DEB                Path to a local ark-os-<platform>-<codename>_<ver>_arm64.deb. If
+                            omitted, a single matching deb in the current
+                            directory is used, or one is downloaded when
+                            --ark-os-version is given.
+
+Options:
+  --platform=jetson|pi|modalix  Override platform autodetection.
+  --codename=NAME           Override OS-release codename autodetection (bookworm, trixie,
+                            jammy, …). Only needed to name a download when /etc/os-release
+                            can't be read.
+  --ark-os-version=X.Y.Z    Download this ark-os release when no local deb is given.
+  --jetson-stats-version=X  Override the jetson-stats version (default from versions.env).
+  --skip-jtop               Do not install jetson-stats (Jetson only).
+  -h, --help                Show this help.
+
+Versions default to packaging/versions.env. jetson-stats is installed system-wide
+via pip so the web UI can report Jetson stats.
+EOF
+}
+
+# --- Arg parsing ---
+PLATFORM=""
+CODENAME=""
+DEB_ARG=""
+ARK_OS_VERSION=""
+SKIP_JTOP=0
+OPT_JETSON_STATS_VERSION=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --platform=*)            PLATFORM="${arg#*=}" ;;
+        --codename=*)             CODENAME="${arg#*=}" ;;
+        --ark-os-version=*)       ARK_OS_VERSION="${arg#*=}" ;;
+        --jetson-stats-version=*) OPT_JETSON_STATS_VERSION="${arg#*=}" ;;
+        --skip-jtop)              SKIP_JTOP=1 ;;
+        -h|--help)                usage; exit 0 ;;
+        -*)                       usage; die "unknown option: $arg" ;;
+        *)
+            [ -z "$DEB_ARG" ] || die "more than one ark-os deb given: '$DEB_ARG' and '$arg'"
+            DEB_ARG="$arg" ;;
+    esac
+done
+
+# Flags/env override versions.env.
+JETSON_STATS_VERSION="${OPT_JETSON_STATS_VERSION:-${JETSON_STATS_VERSION:-}}"
+
+# --- Preconditions ---
+[ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)."
+[ "$(uname -m)" = "aarch64" ] || \
+    die "this installs arm64 packages; run it on the aarch64 device, not your workstation."
+
+# --- Helpers ---
+platform_from_deb() {
+    case "$(basename "$1")" in
+        ark-os-jetson-*)  echo jetson ;;
+        ark-os-pi-*)      echo pi ;;
+        ark-os-modalix-*) echo modalix ;;
+        *)               return 1 ;;
+    esac
+}
+
+detect_platform() {
+    # Modalix before Jetson: PAB V3 model is "ARK Jetson PAB V3 with SiMa
+    # Modalix SoM" and would otherwise match *Jetson*.
+    if [ -r /proc/device-tree/compatible ] &&
+       grep -z -q 'simaai,modalix' /proc/device-tree/compatible; then
+        echo modalix
+        return
+    fi
+    if [ -r /etc/os-release ]; then
+        # shellcheck source=/dev/null
+        . /etc/os-release
+        case "${ID:-} ${ID_LIKE:-}" in
+            *elxr*) echo modalix; return ;;
+        esac
+    fi
+    [ -f /etc/nv_tegra_release ] && { echo jetson; return; }
+    if [ -r /proc/device-tree/model ]; then
+        local model; model="$(tr -d '\0' < /proc/device-tree/model)"
+        case "$model" in
+            *Modalix*|*modalix*) echo modalix; return ;;
+            *Jetson*|*Tegra*) echo jetson; return ;;
+            *Raspberry*Pi*)   echo pi;     return ;;
+        esac
+    fi
+    return 1
+}
+
+detect_codename() {
+    [ -r /etc/os-release ] || return 1
+    local c; c="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"
+    [ -n "$c" ] && { echo "$c"; return; }
+    return 1
+}
+
+asset_exists() {
+    command -v curl >/dev/null 2>&1 || return 0   # no curl: let fetch's wget attempt report the failure
+    curl -fsIL -o /dev/null "$1"
+}
+
+fetch() {
+    local url="$1" out="$2"
+    info "Downloading $(basename "$out")"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fSL --retry 3 -o "$out" "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -O "$out" "$url"
+    else
+        die "need curl or wget to download $url"
+    fi
+}
+
+# apt-get treats a bare filename as a package name; only a path containing a
+# slash is read as a local deb. Resolve to an absolute path so cwd-relative and
+# downloaded debs both install correctly. --allow-downgrades lets an older build
+# install over a newer one (version testing/rollback), which apt refuses by default.
+apt_install_deb() { apt-get install -y --allow-downgrades "$(readlink -f "$1")"; }
+
+install_jtop() {
+    apt-get install -y python3-pip || return 1
+    pip3 install "jetson-stats==$JETSON_STATS_VERSION" || return 1
+    # Bring the jtop daemon up now (pip's setup.py installs the unit) and enable
+    # it for next boot; harmless if already active.
+    systemctl enable --now jtop.service 2>/dev/null || true
+    return 0
+}
+
+# --- Platform: explicit flag > deb filename > hardware autodetect ---
+if [ -z "$PLATFORM" ] && [ -n "$DEB_ARG" ]; then
+    PLATFORM="$(platform_from_deb "$DEB_ARG" || true)"
+fi
+[ -n "$PLATFORM" ] || PLATFORM="$(detect_platform || true)"
+[ -n "$PLATFORM" ] || die "could not determine platform; pass --platform=jetson|pi|modalix."
+case "$PLATFORM" in jetson|pi|modalix) ;; *) die "invalid platform '$PLATFORM' (expected jetson|pi|modalix)." ;; esac
+info "Platform: $PLATFORM"
+
+# Codename: explicit flag wins; otherwise read from the device's /etc/os-release.
+# Only required to construct a download URL (--ark-os-version); a local/cwd deb
+# carries its codename in the filename, and the deb's preinst guards a mismatch.
+[ -n "$CODENAME" ] || CODENAME="$(detect_codename || true)"
+[ -n "$CODENAME" ] && info "OS codename: $CODENAME"
+
+# The release only carries codenames CI builds (build-deb.yml). eLxr 12 (aria) is
+# Debian 12 / Python 3.11, so it installs the bookworm build -- the same pairing
+# the deb's preinst accepts. Without this the download URL would 404 on aria.
+if [ "$PLATFORM" = "modalix" ] && [ "$CODENAME" = "aria" ]; then
+    CODENAME="bookworm"
+    info "Using the $CODENAME build (aria is Debian 12 / Python 3.11)"
+fi
+
+# Every ARK-OS service runs as User=$PLATFORM (baked into the unit files). Modern
+# Raspberry Pi OS no longer ships a default 'pi' account, so fail before touching
+# the system rather than letting the deb's postinst abort on a missing user.
+# Service account matches platform for jetson/pi; Modalix eLxr uses 'sima'.
+case "$PLATFORM" in
+    modalix) SERVICE_USER=sima ;;
+    *)       SERVICE_USER=$PLATFORM ;;
+esac
+getent passwd "$SERVICE_USER" >/dev/null 2>&1 || \
+    die "ARK-OS services run as the user '$SERVICE_USER', which does not exist on this device. Re-image with the username '$SERVICE_USER', or create it first: sudo useradd -m -s /bin/bash $SERVICE_USER && sudo passwd $SERVICE_USER && sudo usermod -aG sudo $SERVICE_USER"
+
+# --- Scratch space for downloads ---
+DL_DIR="$(mktemp -d)"
+trap 'rm -rf "$DL_DIR"' EXIT
+
+# --- Resolve the ark-os deb up front, so we fail before touching the system if
+#     it is missing. ---
+ARK_OS_DEB=""
+if [ -n "$DEB_ARG" ]; then
+    [ -f "$DEB_ARG" ] || die "ark-os deb not found: $DEB_ARG"
+    ARK_OS_DEB="$DEB_ARG"
+else
+    shopt -s nullglob
+    matches=( "ark-os-${PLATFORM}-"*_arm64.deb )
+    shopt -u nullglob
+    if [ "${#matches[@]}" -eq 1 ]; then
+        ARK_OS_DEB="${matches[0]}"
+        info "Using ark-os deb from current directory: $ARK_OS_DEB"
+    elif [ "${#matches[@]}" -gt 1 ]; then
+        die "multiple ark-os-${PLATFORM} debs in $(pwd); pass the one to install as an argument."
+    elif [ -n "$ARK_OS_VERSION" ]; then
+        [ -n "$CODENAME" ] || die "could not determine this device's OS codename to name the download; pass --codename=<bookworm|trixie|jammy|…>."
+        # A Modalix reports eLxr 12's own codename (aria), but releases ship the
+        # ABI-compatible bookworm build until a native eLxr builder exists (see the
+        # modalix leg of .github/workflows/build-deb.yml). Prefer the exact codename
+        # so an aria asset wins the day it is published.
+        CANDIDATES="$CODENAME"
+        [ "$PLATFORM" = modalix ] && [ "$CODENAME" != bookworm ] && CANDIDATES="$CODENAME bookworm"
+        ARK_OS_DEB=""
+        for candidate in $CANDIDATES; do
+            name="ark-os-${PLATFORM}-${candidate}_${ARK_OS_VERSION}_arm64.deb"
+            if asset_exists "$ARK_OS_REPO/releases/download/v${ARK_OS_VERSION}/$name"; then
+                [ "$candidate" = "$CODENAME" ] || info "No $CODENAME build for v${ARK_OS_VERSION}; using the $candidate build."
+                ARK_OS_DEB="$DL_DIR/$name"
+                fetch "$ARK_OS_REPO/releases/download/v${ARK_OS_VERSION}/$name" "$ARK_OS_DEB"
+                break
+            fi
+        done
+        [ -n "$ARK_OS_DEB" ] || die "v${ARK_OS_VERSION} publishes no ark-os-${PLATFORM} build for this OS (tried: ${CANDIDATES// /, })."
+    else
+        die "no ark-os deb given: pass a path, place one in $(pwd), or use --ark-os-version=X.Y.Z."
+    fi
+fi
+
+# --- Refresh apt indices (best effort; install still works off cached indices) ---
+info "Refreshing apt package indices"
+apt-get update || warn "apt-get update failed; continuing with existing indices."
+
+# ===========================================================================
+# 1. jetson-stats (jtop) — Jetson only. Optional: system-manager degrades
+#    gracefully without it, so a failure here warns but does not abort.
+#    Installed before ark-os so jtop.service is up when system-manager starts.
+# ===========================================================================
+if [ "$PLATFORM" = "jetson" ] && [ "$SKIP_JTOP" -eq 0 ]; then
+    if [ -z "$JETSON_STATS_VERSION" ]; then
+        warn "jetson-stats version unknown — skipping jtop (web UI Jetson stats will be unavailable)."
+    else
+        installed_js="$(pip3 show jetson-stats 2>/dev/null | awk '/^Version:/{print $2}' || true)"
+        if [ "$installed_js" = "$JETSON_STATS_VERSION" ]; then
+            info "jetson-stats $JETSON_STATS_VERSION already installed — skipping."
+        elif install_jtop; then
+            info "jetson-stats $JETSON_STATS_VERSION installed."
+        else
+            warn "jetson-stats install failed — Jetson stats in the web UI will be unavailable."
+            warn "  retry later with: sudo pip3 install \"jetson-stats==${JETSON_STATS_VERSION}\""
+        fi
+    fi
+fi
+
+# ===========================================================================
+# 2. ark-os — its postinst configures users/groups/services and (on a running
+#    system) starts everything.
+# ===========================================================================
+info "Installing $(basename "$ARK_OS_DEB")"
+apt_install_deb "$ARK_OS_DEB"
+
+info "Done. ARK-OS ($PLATFORM) is installed."
+echo "    Manage services and configuration from the web UI (http://<hostname>.local)."
+echo "    If the install output above asked you to reboot (migration from a source"
+echo "    install), do so now."

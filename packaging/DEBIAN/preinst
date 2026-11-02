@@ -1,0 +1,48 @@
+#!/bin/sh
+# Refuse to install a package built for one OS release onto another. ARK-OS bundles
+# a venv (created with `python3 -m venv --copies`, so it binds to the system
+# python's stdlib at runtime), natively-compiled binaries, and Node — all ABI-bound
+# to @CODENAME@: the system python version and shared-library sonames differ across
+# Debian/Ubuntu releases, so on the wrong release the services break at runtime. The
+# codename is part of the package name (ark-os-@PLATFORM@-@CODENAME@); this is the
+# matching runtime check for a hand-installed .deb, which apt would otherwise reject
+# only later with a cryptic unmet-dependency error (or not at all).
+set -e
+
+want="@CODENAME@"
+have=""
+[ -r /etc/os-release ] && have="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"
+
+compatible_codename=0
+[ "$have" = "$want" ] && compatible_codename=1
+
+# eLxr 12 (aria) is Debian 12 / Python 3.11, the same runtime class as bookworm,
+# so the two are interchangeable for modalix -- CI only builds bookworm.
+# shellcheck disable=SC2050  # @PLATFORM@ is substituted at package build
+if [ "@PLATFORM@" = "modalix" ]; then
+    case "$want:$have" in
+        bookworm:aria|aria:bookworm) compatible_codename=1 ;;
+    esac
+fi
+
+if [ -n "$have" ] && [ "$compatible_codename" -eq 0 ]; then
+    echo "ERROR: ark-os-@PLATFORM@-$want is built for the '$want' OS release, but this system is '$have'." >&2
+    echo "       Its bundled runtime will not work here — install the ark-os-@PLATFORM@-$have build instead." >&2
+    if [ "${ARK_OS_ALLOW_CODENAME_MISMATCH:-0}" != "1" ]; then
+        echo "       (set ARK_OS_ALLOW_CODENAME_MISMATCH=1 to override, for testing only.)" >&2
+        exit 1
+    fi
+    echo "       Continuing anyway because ARK_OS_ALLOW_CODENAME_MISMATCH=1." >&2
+fi
+
+# On upgrade, snapshot the live configs before dpkg unpacks. The new package ships its
+# defaults under /usr/lib/ark-os/config-defaults (not /etc/ark-os), so dpkg removes the
+# old package's /etc/ark-os/* as obsolete during unpack; postinst's merge_configs.py
+# reads this snapshot to carry the user's values forward.
+if [ "$1" = "upgrade" ] && [ -d /etc/ark-os ]; then
+    rm -rf /var/lib/ark-os/.config-backup
+    mkdir -p /var/lib/ark-os/.config-backup
+    cp -a /etc/ark-os/. /var/lib/ark-os/.config-backup/ 2>/dev/null || true
+fi
+
+exit 0
