@@ -76,6 +76,13 @@ if [ -n "$ARK_HOME" ]; then
         echo "Legacy configs backed up to $LEGACY_BACKUP — merge custom edits into /etc/ark-os/ if needed."
         MIGRATED=1
     fi
+    # The router config of a source install reaches the merge below as the user copy:
+    # without it the fresh seed drops every endpoint added on the old install.
+    if [ ! -f /etc/ark-os/mavlink-router.conf ] && [ ! -f /var/lib/ark-os/.config-backup/mavlink-router.conf ] \
+       && [ -f "$ARK_HOME/.local/share/mavlink-router/main.conf" ]; then
+        mkdir -p /var/lib/ark-os/.config-backup
+        cp "$ARK_HOME/.local/share/mavlink-router/main.conf" /var/lib/ark-os/.config-backup/mavlink-router.conf
+    fi
 
     # (b) Stop and disable legacy user services (running system only).
     if [ -d /run/systemd/system ] && [ -n "$UID_VAL" ] && [ -d "$ARK_HOME/.config/systemd/user" ]; then
@@ -176,6 +183,18 @@ chown -R "$ARK_USER:$ARK_USER" /var/lib/ark-os
 # the `toml` lib; a no-op-safe seed in the build chroot (empty /etc/ark-os).
 # ===========================================================================
 mkdir -p /etc/ark-os
+# The TCP server default moved from 0 to 5760. A config seeded by an upstream package
+# carries 0 as a user value the merge would keep, so the old default is rewritten once;
+# the marker keeps a 0 set on purpose after that.
+TCP_MARK=/var/lib/ark-os/.tcp-server-5760
+if [ ! -f "$TCP_MARK" ]; then
+    for f in /var/lib/ark-os/.config-backup/mavlink-router.conf /etc/ark-os/mavlink-router.conf; do
+        if [ -f "$f" ]; then
+            sed -i -E 's/^([[:space:]]*TcpServerPort[[:space:]]*=[[:space:]]*)0([[:space:]]*(#.*)?)$/\15760\2/' "$f" || true
+        fi
+    done
+    mkdir -p /var/lib/ark-os && touch "$TCP_MARK"
+fi
 if [ -x /usr/lib/ark-os/venv/bin/python3 ] && [ -d /usr/lib/ark-os/config-defaults ]; then
     # logloader.toml moved from flat keys to nested tables. merge_configs takes
     # its structure from the template and prunes scalars the template lacks,
@@ -214,13 +233,15 @@ ln -sf /etc/ark-os/flight-review.ini /usr/lib/ark-os/flight-review/app/config_us
 
 # ===========================================================================
 # Step 5/6: Enable always-on services (and the group target). Opt-in services
-# (dds-agent, logloader, polaris, pointperfect, flight-review, rid-transmitter)
-# are installed but deliberately NOT enabled — the operator turns them on via the web UI.
+# (logloader, polaris, pointperfect, flight-review, rid-transmitter, and dds-agent
+# off jetson) are installed but deliberately NOT enabled — the operator turns them on
+# via the web UI. On jetson dds-agent is always on: every vehicle runs the DDS link, and
+# an upgrade enables it again like the other always-on units.
 # systemctl enable is a static symlink operation that works offline in a chroot.
 # ===========================================================================
 ENABLE_SERVICES="mavlink-router rtsp-server go2rtc ark-ui-backend autopilot-manager connection-manager service-manager system-manager"
 if [ "$PLATFORM" = "jetson" ]; then
-    ENABLE_SERVICES="$ENABLE_SERVICES jetson-can"
+    ENABLE_SERVICES="$ENABLE_SERVICES jetson-can dds-agent"
 fi
 
 systemctl enable ark-os.target 2>/dev/null || true
@@ -287,9 +308,9 @@ if [ -d /run/systemd/system ]; then
     # `systemctl start ark-os.target` above does NOT achieve this: the units are
     # WantedBy= (not PartOf=) the target, so starting/stopping/restarting the
     # target never propagates to a unit that is already active — it just stays up
-    # on the old code. try-restart only touches currently-active units, so a
-    # failed (e.g. mavlink-router with no FC) or operator-stopped service is
-    # left as-is rather than force-started.
+    # on the old code. try-restart only touches currently-active units, so an
+    # operator-stopped (inactive) service is left as-is rather than force-started;
+    # mavlink-router with no FC is waiting to retry (activating) and is restarted.
     if [ -n "$2" ]; then
         RESTART_SERVICES="$ENABLE_SERVICES dds-agent logloader polaris pointperfect flight-review rid-transmitter"
         systemctl try-restart $RESTART_SERVICES 2>/dev/null || true
