@@ -62,8 +62,8 @@ case "$transport" in
         [ -n "$cfg_device" ] || { echo "dds-agent: serial transport needs 'device'" >&2; exit 1; }
         [ -n "$cfg_baudrate" ] || { echo "dds-agent: serial transport needs 'baudrate'" >&2; exit 1; }
         # The unit deliberately carries no dev-*.device ordering -- transport is a
-        # runtime setting, so the UART can only be checked here. Exiting fails the
-        # unit under the same restart budget as mavlink-router with no FC attached.
+        # runtime setting, so the UART can only be checked here. Exiting leaves systemd
+        # retrying 30 s apart without giving up, the same policy as mavlink-router.
         [ -e "$cfg_device" ] || { echo "dds-agent: serial device $cfg_device does not exist" >&2; exit 1; }
         CMD=("$AGENT" serial -b "$cfg_baudrate" -D "$cfg_device")
         echo "Starting DDS agent (serial $cfg_device @ $cfg_baudrate) from $CONFIG"
