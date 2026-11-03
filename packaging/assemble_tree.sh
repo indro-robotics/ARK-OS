@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# Lay out the FHS package tree under $BUILD_DIR and assemble DEBIAN/, substituting
+# build-time tokens and renaming/namespacing files. Runs LAST, after the binaries,
+# frontend, venv, and node have been staged. Invoked by build.sh.
+set -euo pipefail
+
+cd "$REPO_ROOT"
+
+PKG="$BUILD_DIR"
+P="$PLATFORM"
+ARK="$PKG_PREFIX"   # /usr/lib/ark-os
+
+# Platform-specific control Depends. EXTRA_DEPENDS is a suffix appended to the end
+# of the base Depends list (after network-manager). PYTHON_PKG (the system python
+# the bundled venv binds to) and CODENAME come from build.sh, which resolves them
+# from the build host's release.
+# NOTE: the base Depends in DEBIAN/control target the supported releases' lib names.
+# Trixie's time64 transition renamed libssl3 -> libssl3t64, handled in control by the
+# alternative "libssl3t64 | libssl3"; use the same idiom if a future release renames more.
+case "$P" in
+    jetson)  EXTRA_DEPENDS=", bluez, bluez-tools, libbluetooth3, libqmi-utils" ;;
+    pi)      EXTRA_DEPENDS=", gstreamer1.0-libcamera, raspi-utils" ;;
+    # eLxr/Modalix: base gstreamer deps only; no Jetson BT QMI stack, no raspi-utils.
+    # gpiod supplies the gpioset that fmu_gpio.py prefers for the FMU reset pulse.
+    modalix) EXTRA_DEPENDS=", gpiod" ;;
+esac
+
+# --- directory skeleton ---
+mkdir -p "$PKG/DEBIAN"
+mkdir -p "$PKG/lib/systemd/system"
+mkdir -p "$PKG$ARK/bin" "$PKG$ARK/scripts" "$PKG$ARK/libexec" "$PKG$ARK/python" "$PKG$ARK/manifests"
+mkdir -p "$PKG/etc/ark-os"
+mkdir -p "$PKG/etc/nginx/sites-available"
+mkdir -p "$PKG/etc/polkit-1/rules.d"
+mkdir -p "$PKG/etc/polkit-1/localauthority/90-mandatory.d"
+mkdir -p "$PKG/etc/systemd/journald.conf.d"
+mkdir -p "$PKG/etc/sudoers.d"
+
+# --- systemd units + group target ---
+# common/ is the unit set every platform gets; service-files/<platform>/ holds the
+# extras only that platform has (jetson-can, rid-transmitter). Units carry
+# @ARK_USER@ rather than a baked-in username, so a new platform is a user name in
+# build.sh plus its extras dir -- not a third copy of thirteen identical units.
+UNITS="$PKG/lib/systemd/system"
+install -m 0644 packaging/service-files/ark-os.target "$UNITS/ark-os.target"
+install -m 0644 packaging/service-files/ark-os-firstboot.service "$UNITS/ark-os-firstboot.service"
+for f in packaging/service-files/common/*.service packaging/service-files/"$P"/*.service; do
+    [ -f "$f" ] || continue
+    sed "s/@ARK_USER@/$ARK_USER/g" "$f" > "$UNITS/$(basename "$f")"
+    chmod 0644 "$UNITS/$(basename "$f")"
+done
+
+# --- systemd-only service entry points: wrapper scripts invoked solely by a unit's
+# ExecStart/ExecStop. They go in libexec/ (NOT on PATH) so they stay out of the
+# operator command set; the operator/dev tools further down land in scripts/, which
+# the profile.d snippet adds to PATH. ---
+install -m 0755 services/mavlink-router/start_mavlink_router.sh   "$PKG$ARK/libexec/"
+install -m 0755 services/dds-agent/start_dds_agent.sh             "$PKG$ARK/libexec/"
+install -m 0755 services/flight-review/start_flight_review.sh     "$PKG$ARK/libexec/"
+if [ "$P" = "jetson" ]; then
+    install -m 0755 services/jetson-can/start_can_interface.sh "$PKG$ARK/libexec/"
+    install -m 0755 services/jetson-can/stop_can_interface.sh  "$PKG$ARK/libexec/"
+fi
+
+# --- platform + common utility scripts (top-level files only; subdirs like
+# jetson's extras/ are handled separately below) ---
+for f in platform/"$P"/scripts/* platform/common/scripts/*; do
+    [ -f "$f" ] && install -m 0755 "$f" "$PKG$ARK/scripts/$(basename "$f")"
+done
+
+# --- jetson dev/diagnostic extras: kept in their own subdir so they stay
+# logically separate from the service/operator scripts, but still installed
+# onto PATH (via the scripts/extras entry in ark-os-path.sh) for devs. ---
+if [ "$P" = "jetson" ]; then
+    for f in platform/jetson/scripts/extras/*; do
+        [ -f "$f" ] && install -D -m 0755 "$f" "$PKG$ARK/scripts/extras/$(basename "$f")"
+    done
+fi
+
+# --- operator scripts on PATH: a profile.d snippet adds $ARK/scripts to PATH for
+# login shells. The scripts carry #!/usr/lib/ark-os/venv/bin/python3, so they run
+# under the bundled venv with nothing to activate -- operators run them by name.
+mkdir -p "$PKG/etc/profile.d"
+install -m 0644 packaging/system-config/ark-os-path.sh "$PKG/etc/profile.d/ark-os.sh"
+
+# --- first-boot finalization script (tokens substituted like the postinst). Runs the
+# runtime-only steps that can't happen in the build chroot; see ark-os-firstboot.service.
+# systemd-only (oneshot), so it lives in libexec/ alongside the other unit wrappers. ---
+sed -e "s/@ARK_USER@/$ARK_USER/g" -e "s/@PLATFORM@/$PLATFORM/g" \
+    packaging/system-config/ark_os_firstboot.sh > "$PKG$ARK/libexec/ark_os_firstboot.sh"
+chmod 0755 "$PKG$ARK/libexec/ark_os_firstboot.sh"
+
+# --- python services ---
+for svc in autopilot_manager connection_manager service_manager system_manager; do
+    dir=$(echo "$svc" | tr '_' '-')
+    install -m 0644 "services/$dir/$svc.py" "$PKG$ARK/python/$svc.py"
+done
+
+# --- manifests: install one per service unit that exists on this platform ---
+for f in services/*/*.manifest.json; do
+    svc=$(basename "$f" .manifest.json)
+    if [ -f "$UNITS/$svc.service" ]; then
+        install -m 0644 "$f" "$PKG$ARK/manifests/$svc.manifest.json"
+    fi
+done
+
+# --- flight-review app (verbatim submodule copy) ---
+mkdir -p "$PKG$ARK/flight-review"
+cp -r services/flight-review/flight_review/app "$PKG$ARK/flight-review/"
+# Drop any local CPython bytecode caches the recursive copy may have picked up so
+# stray dev artifacts never ship in the .deb (the bundled venv's caches are kept).
+find "$PKG$ARK/flight-review" -type d -name __pycache__ -prune -exec rm -rf {} +
+
+# --- default config templates -> /usr/lib/ark-os/config-defaults ---
+# Shipped as templates rather than into /etc/ark-os so a dpkg upgrade never clobbers the
+# user's live configs; postinst's merge_configs.py reconciles them into /etc/ark-os (seed
+# on first install, value-preserving merge on upgrade). The empty /etc/ark-os dir created
+# above is the merge target.
+DEFAULTS="$PKG$ARK/config-defaults"
+mkdir -p "$DEFAULTS"
+install -m 0644 services/mavlink-router/main.conf "$DEFAULTS/mavlink-router.conf"
+for f in packaging/config/*; do
+    base=$(basename "$f")
+    # Skip a config whose service is not on this platform (rid-transmitter off
+    # jetson): it would only surface as an orphan entry in the Services tab.
+    [ -f "$UNITS/${base%.*}.service" ] || continue
+    # dds-agent.toml is filled with the platform's transport below.
+    [ "$base" = "dds-agent.toml" ] && continue
+    install -m 0644 "$f" "$DEFAULTS/$base"
+done
+
+# The dds-agent transport lives in exactly one place: this table seeds the config,
+# and start_dds_agent.sh reads it back with no fallback of its own. Modalix has no
+# usable Telem2 UART, so it defaults to UDP; the device value is still written so
+# switching to serial in the UI has a sane starting point.
+DDS_TRANSPORT=serial
+DDS_DEVICE=/dev/ttyTHS1
+case "$P" in
+    pi)      DDS_DEVICE=/dev/ttyAMA4 ;;
+    modalix) DDS_TRANSPORT=ethernet ;;
+esac
+sed -e "s|@DDS_TRANSPORT@|$DDS_TRANSPORT|g" -e "s|@DDS_DEVICE@|$DDS_DEVICE|g" \
+    packaging/config/dds-agent.toml > "$DEFAULTS/dds-agent.toml"
+chmod 0644 "$DEFAULTS/dds-agent.toml"
+install -m 0755 packaging/system-config/merge_configs.py "$PKG$ARK/libexec/merge_configs.py"
+install -m 0755 packaging/system-config/migrate_logloader_config.py "$PKG$ARK/libexec/migrate_logloader_config.py"
+
+# --- nginx site ---
+install -m 0644 frontend/ark-ui.nginx "$PKG/etc/nginx/sites-available/ark-ui"
+
+# --- sudoers (renamed, 0440) ---
+install -m 0440 platform/common/ark_scripts.sudoers "$PKG/etc/sudoers.d/ark-os"
+
+# --- NetworkManager polkit rule + pkla (renamed) ---
+install -m 0644 platform/common/wifi/02-network-manager.rules \
+    "$PKG/etc/polkit-1/rules.d/02-ark-network-manager.rules"
+install -m 0644 platform/common/wifi/99-network.pkla \
+    "$PKG/etc/polkit-1/localauthority/90-mandatory.d/99-ark-network.pkla"
+
+# --- service-manager polkit rule: substitute @ARK_USER@; pi strips JETSON-ONLY ---
+SMR="$PKG/etc/polkit-1/rules.d/03-ark-service-manager.rules"
+if [ "$P" = "pi" ] || [ "$P" = "modalix" ]; then
+    # No Jetson-only polkit grants (jtop etc.) on Pi or Modalix.
+    sed "s/@ARK_USER@/$ARK_USER/g" packaging/system-config/03-ark-service-manager.rules \
+        | grep -v 'JETSON-ONLY' > "$SMR"
+else
+    sed "s/@ARK_USER@/$ARK_USER/g" packaging/system-config/03-ark-service-manager.rules > "$SMR"
+fi
+chmod 0644 "$SMR"
+
+# --- service-manager polkit pkla: the JetPack-6 / Ubuntu 22.04 rootfs runs polkit
+# 0.105, which honors .pkla (local authority) and ignores JS .rules; Pi/Bookworm is
+# the reverse. Ship both so the grant applies on each. pkla can't scope per-unit, so
+# it grants the service user blanket systemd manage rights (same breadth as the
+# NetworkManager grant above); the .rules file keeps per-unit scoping where honored.
+SMPKLA="$PKG/etc/polkit-1/localauthority/90-mandatory.d/99-ark-service-manager.pkla"
+sed "s/@ARK_USER@/$ARK_USER/g" packaging/system-config/99-ark-service-manager.pkla > "$SMPKLA"
+chmod 0644 "$SMPKLA"
+
+# --- udev gpio rules (jetson BOARD GPIO + modalix gpiochip for FMU reset) ---
+if [ "$P" = "jetson" ]; then
+    mkdir -p "$PKG/etc/udev/rules.d"
+    install -m 0644 platform/jetson/99-gpio.rules "$PKG/etc/udev/rules.d/99-ark-gpio.rules"
+elif [ "$P" = "modalix" ]; then
+    mkdir -p "$PKG/etc/udev/rules.d"
+    install -m 0644 platform/modalix/99-gpio.rules "$PKG/etc/udev/rules.d/99-ark-gpio.rules"
+fi
+
+# --- journald drop-in ---
+install -m 0644 packaging/system-config/10-ark-os.conf \
+    "$PKG/etc/systemd/journald.conf.d/10-ark-os.conf"
+
+# --- ld.so.conf for the private C++ libs bundled under $ARK/lib (postinst runs
+# ldconfig). $ARK/mavsdk/lib is deliberately absent: conf.d dirs beat /usr/lib
+# and /usr/local/lib in cache order, so listing it would shadow a user-installed
+# MAVSDK; ark-os binaries use RUNPATH instead (build_binaries.sh). ---
+mkdir -p "$PKG/etc/ld.so.conf.d"
+printf '%s\n' "$ARK/lib" > "$PKG/etc/ld.so.conf.d/ark-os.conf"
+chmod 0644 "$PKG/etc/ld.so.conf.d/ark-os.conf"
+
+# --- DEBIAN control (token substitution) + maintainer scripts ---
+sed -e "s/@PLATFORM@/$PLATFORM/g" \
+    -e "s/@CODENAME@/$CODENAME/g" \
+    -e "s/@VERSION@/$VERSION/g" \
+    -e "s/@PYTHON@/$PYTHON_PKG/g" \
+    -e "s|@EXTRA_DEPENDS@|$EXTRA_DEPENDS|g" \
+    packaging/DEBIAN/control > "$PKG/DEBIAN/control"
+chmod 0644 "$PKG/DEBIAN/control"
+
+sed -e "s/@PLATFORM@/$PLATFORM/g" \
+    -e "s/@CODENAME@/$CODENAME/g" \
+    packaging/DEBIAN/preinst > "$PKG/DEBIAN/preinst"
+chmod 0755 "$PKG/DEBIAN/preinst"
+
+sed -e "s/@ARK_USER@/$ARK_USER/g" \
+    -e "s/@PLATFORM@/$PLATFORM/g" \
+    packaging/DEBIAN/postinst > "$PKG/DEBIAN/postinst"
+chmod 0755 "$PKG/DEBIAN/postinst"
+
+install -m 0755 packaging/DEBIAN/prerm  "$PKG/DEBIAN/prerm"
+install -m 0755 packaging/DEBIAN/postrm "$PKG/DEBIAN/postrm"
+
+# --- sanity: confirm the staged payloads from the other build steps are present ---
+missing=0
+for p in \
+    "$PKG$ARK/bin/mavlink-routerd" \
+    "$PKG$ARK/bin/node" \
+    "$PKG$ARK/venv/bin/python3" \
+    "$PKG$ARK/ark-ui-backend/index.js" \
+    "$PKG/var/www/ark-ui/html" \
+    "$PKG$ARK/flight-review/app/serve.py" \
+    "$PKG$ARK/libexec/ark_os_firstboot.sh" \
+    "$PKG/lib/systemd/system/ark-os-firstboot.service" \
+    "$PKG/DEBIAN/control"; do
+    if [ ! -e "$p" ]; then echo "MISSING: $p" >&2; missing=1; fi
+done
+[ "$missing" -eq 0 ] || { echo "assemble_tree: staging is incomplete (see MISSING above)" >&2; exit 1; }
+
+echo "==> package tree assembled at $PKG"

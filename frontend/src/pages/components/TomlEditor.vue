@@ -1,0 +1,689 @@
+<template>
+  <div class="editor-backdrop">
+    <div class="editor-container">
+      <div class="editor-content">
+        <h1>{{ serviceName }}</h1>
+
+        <div class="toml-editor">
+          <!-- Link callouts from the service's UI hints; no beforeField = top of the form -->
+          <a
+            v-for="callout in calloutsBefore(null)"
+            :key="callout.url"
+            :href="callout.url"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="callout-link"
+          >
+            <span class="callout-text">{{ callout.text }}</span>
+            <span class="callout-cta">{{ callout.cta }}</span>
+          </a>
+
+          <!-- Top-level primitive values first (skip *_options arrays used for dropdowns) -->
+          <div v-for="key in topLevelFieldKeys" :key="key" class="form-group">
+            <a
+              v-for="callout in calloutsBefore(key)"
+              :key="callout.url"
+              :href="callout.url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="callout-link"
+            >
+              <span class="callout-text">{{ callout.text }}</span>
+              <span class="callout-cta">{{ callout.cta }}</span>
+            </a>
+
+            <label :for="key">{{ formatKey(key) }}</label>
+            <p v-if="fieldHelpText(key)" class="field-help">{{ fieldHelpText(key) }}</p>
+
+            <!-- Dropdown when a sibling <field>_options array is present -->
+            <select
+              v-if="hasTopLevelOptions(key)"
+              :id="key"
+              v-model="config[key]"
+              class="select-input"
+            >
+              <option
+                v-for="option in getTopLevelOptions(key)"
+                :key="option"
+                :value="option"
+              >
+                {{ formatValue(option) }}
+              </option>
+            </select>
+
+            <!-- String input -->
+            <input
+              v-else-if="fieldType(key, config[key]) === 'string'"
+              type="text"
+              :id="key"
+              v-model="config[key]"
+              class="text-input"
+            />
+
+            <!-- Boolean input -->
+            <div v-else-if="fieldType(key, config[key]) === 'boolean'" class="checkbox-group">
+              <input
+                type="checkbox"
+                :id="key"
+                v-model="config[key]"
+                class="checkbox-input"
+              />
+            </div>
+
+            <!-- Number input -->
+            <input
+              v-else-if="fieldType(key, config[key]) === 'number'"
+              type="number"
+              :id="key"
+              v-model.number="config[key]"
+              class="number-input"
+              step="any"
+            />
+          </div>
+
+          <!-- Then display each sub-table with a section header -->
+          <div v-for="(tableValue, tableKey) in subTables" :key="tableKey" class="subtable-section">
+            <div class="subtable-header">
+              {{ formatKey(tableKey) }}
+            </div>
+
+            <div class="subtable-content">
+              <div
+                v-for="subKey in getNonOptionsKeys(tableValue)"
+                :key="`${tableKey}.${subKey}`"
+                class="form-group"
+              >
+                <label :for="`${tableKey}.${subKey}`">{{ formatKey(subKey) }}</label>
+
+                <!-- Dropdown using options array if available -->
+                <select
+                  v-if="hasOptionsArray(tableKey, subKey)"
+                  :id="`${tableKey}.${subKey}`"
+                  v-model="config[tableKey][subKey]"
+                  class="select-input"
+                >
+                  <option
+                    v-for="option in getOptionsArray(tableKey, subKey)"
+                    :key="option"
+                    :value="option"
+                  >
+                    {{ formatValue(option) }}
+                  </option>
+                </select>
+
+                <!-- String input -->
+                <input
+                  v-else-if="fieldType(`${tableKey}.${subKey}`, tableValue[subKey]) === 'string'"
+                  type="text"
+                  :id="`${tableKey}.${subKey}`"
+                  v-model="config[tableKey][subKey]"
+                  class="text-input"
+                />
+
+                <!-- Boolean input -->
+                <div v-else-if="fieldType(`${tableKey}.${subKey}`, tableValue[subKey]) === 'boolean'" class="checkbox-group">
+                  <input
+                    type="checkbox"
+                    :id="`${tableKey}.${subKey}`"
+                    v-model="config[tableKey][subKey]"
+                    class="checkbox-input"
+                  />
+                </div>
+
+                <!-- Number input -->
+                <input
+                  v-else-if="fieldType(`${tableKey}.${subKey}`, tableValue[subKey]) === 'number'"
+                  type="number"
+                  :id="`${tableKey}.${subKey}`"
+                  v-model.number="config[tableKey][subKey]"
+                  class="number-input"
+                  step="any"
+                />
+
+                <!-- Simple array display (read-only for now) -->
+                <div v-else-if="Array.isArray(tableValue[subKey])" class="array-display">
+                  {{ JSON.stringify(tableValue[subKey]) }}
+                </div>
+
+                <!-- Anything else, which in practice means a table nested two
+                     deep. Nothing rendered here before, so the field simply
+                     vanished from the form; say so instead. -->
+                <div v-else class="unsupported-field">
+                  Not editable here — change this in the config file directly.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions-container">
+        <div class="actions">
+          <button @click="saveConfig" class="save-button">Save</button>
+          <button @click="cancelEdit" class="cancel-button">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+import axios from 'axios';
+import toml from 'toml-js';
+import serviceUiHints from './serviceUiHints.js';
+
+// Display-only casing for tokens the sentence-case default would mangle
+// ("Ntrip host"); config keys and saved values stay lowercase.
+const ACRONYMS = new Set(['ntrip', 'rtcm', 'spartn', 'gga', 'mga', 'tls', 'url', 'api', 'udp', 'tcp', 'ip']);
+
+export default {
+  name: 'TomlEditor',
+  props: {
+    serviceName: {
+      type: String,
+      required: true
+    }
+  },
+  data() {
+    return {
+      config: {},
+      originalConfig: null,
+      originalTypes: {} // Map to store original types
+    };
+  },
+  computed: {
+    // Declarative UI hints for this service (see serviceUiHints.js)
+    uiHints() {
+      return serviceUiHints[this.serviceName] || {};
+    },
+    // Top-level editable fields (primitives + simple arrays that aren't *_options)
+    topLevelFieldKeys() {
+      return Object.keys(this.config).filter((key) => {
+        if (this.isOptionsField(key)) {
+          return false;
+        }
+        if (!this.fieldVisible(key)) {
+          return false;
+        }
+        const value = this.config[key];
+        return !this.isObject(value);
+      });
+    },
+    // Get all sub-tables (nested objects)
+    subTables() {
+      const tables = {};
+      Object.entries(this.config).forEach(([key, value]) => {
+        if (this.isObject(value)) {
+          tables[key] = value;
+        }
+      });
+      return tables;
+    }
+  },
+  mounted() {
+    this.loadConfig();
+  },
+  methods: {
+    // Link callouts for a given slot: a top-level field name, or null for
+    // the top of the form
+    calloutsBefore(key) {
+      return (this.uiHints.callouts || []).filter((c) => (c.beforeField || null) === key);
+    },
+
+    isObject(value) {
+      return typeof value === 'object' && value !== null && !Array.isArray(value);
+    },
+
+    // Hide a field when uiHints.visibleWhen[field] does not match live config.
+    fieldVisible(key) {
+      const rules = (this.uiHints.visibleWhen || {})[key];
+      if (!rules) {
+        return true;
+      }
+      return Object.entries(rules).every(([field, values]) => {
+        const allowed = Array.isArray(values) ? values : [values];
+        return allowed.includes(this.config[field]);
+      });
+    },
+
+    fieldHelpText(key) {
+      return (this.uiHints.fieldHelp || {})[key] || '';
+    },
+
+    // Check if a field is an options array (ends with _options)
+    isOptionsField(key) {
+      return key.endsWith('_options');
+    },
+
+    // Get all keys that aren't options fields
+    getNonOptionsKeys(obj) {
+      return Object.keys(obj).filter(key => !this.isOptionsField(key));
+    },
+
+    // Get the base field name for an options field
+    getBaseFieldName(optionsKey) {
+      return optionsKey.replace('_options', '');
+    },
+
+    // Check if a field has a corresponding options array
+    hasOptionsArray(tableKey, fieldKey) {
+      const optionsKey = `${fieldKey}_options`;
+      return (
+        this.config[tableKey] &&
+        Array.isArray(this.config[tableKey][optionsKey])
+      );
+    },
+
+    // Get the options array for a field
+    getOptionsArray(tableKey, fieldKey) {
+      const optionsKey = `${fieldKey}_options`;
+      return this.config[tableKey][optionsKey] || [];
+    },
+
+    // Top-level dropdown support (same *_options convention as nested tables)
+    hasTopLevelOptions(fieldKey) {
+      return Array.isArray(this.config[`${fieldKey}_options`]);
+    },
+
+    getTopLevelOptions(fieldKey) {
+      return this.config[`${fieldKey}_options`] || [];
+    },
+
+    // Pick the input from the type in the loaded config rather than the live
+    // value. Vue's .number modifier passes non-numeric input straight through,
+    // so an emptied number field holds "" — keying off the live type would swap
+    // it to a text input and every later keystroke would save as a string.
+    fieldType(path, value) {
+      return this.originalTypes[path] || typeof value;
+    },
+
+    // Number('') is 0, so blank must be rejected rather than silently saved.
+    toNumber(value) {
+      return String(value).trim() === '' ? NaN : Number(value);
+    },
+
+    // Store original types when config is loaded
+    storeOriginalTypes(obj, path = '') {
+      for (const key in obj) {
+        const fullPath = path ? `${path}.${key}` : key;
+        const value = obj[key];
+
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          this.storeOriginalTypes(value, fullPath);
+        } else {
+          this.originalTypes[fullPath] = typeof value;
+        }
+      }
+    },
+
+    // Validate that all fields still match their original types
+    validateTypes() {
+      const invalidFields = [];
+
+      const checkTypes = (obj, path = '') => {
+        for (const key in obj) {
+          const fullPath = path ? `${path}.${key}` : key;
+          const value = obj[key];
+
+          if (value && typeof value === 'object' && !Array.isArray(value)) {
+            checkTypes(value, fullPath);
+          } else if (this.originalTypes[fullPath]) {
+            const originalType = this.originalTypes[fullPath];
+            const currentType = typeof value;
+
+            if (originalType === 'number' && currentType !== 'number') {
+              // Check if it can be converted to a number
+              if (isNaN(this.toNumber(value))) {
+                invalidFields.push({
+                  path: fullPath,
+                  expectedType: originalType,
+                  currentType: currentType,
+                  value: value
+                });
+              }
+            }
+          }
+        }
+      };
+
+      checkTypes(this.config);
+      return invalidFields;
+    },
+
+    loadConfig() {
+      console.log(`Loading config for service: ${this.serviceName}`);
+      axios
+        .get(`/api/service/config?serviceName=${this.serviceName}`)
+        .then((response) => {
+          const status = response.data.status;
+          const configData = response.data.data;
+
+          if (status === 'success') {
+            try {
+              this.config = toml.parse(configData.trim());
+
+              // Store the original data types
+              this.originalTypes = {};
+              this.storeOriginalTypes(this.config);
+
+              // Store original config for comparison or reset
+              this.originalConfig = JSON.parse(JSON.stringify(this.config));
+            } catch (error) {
+              console.error('Error parsing TOML:', error);
+            }
+          } else {
+            console.error('Failed to load config:', configData);
+          }
+        })
+        .catch((error) => {
+          console.error('Error fetching config from API:', error);
+        });
+    },
+
+    saveConfig() {
+      try {
+        // Validate types before saving
+        const invalidFields = this.validateTypes();
+
+        if (invalidFields.length > 0) {
+          // Format error message
+          const errorMessages = invalidFields.map(field => {
+            const fieldName = field.path.split('.').pop();
+            return `"${fieldName}" should be a number but contains "${field.value}"`;
+          });
+
+          alert(`Please fix the following issues before saving:\n\n${errorMessages.join('\n')}`);
+          return;
+        }
+
+        // All validations passed, prepare to save
+        const configToSave = JSON.parse(JSON.stringify(this.config));
+
+        // Convert numeric strings to actual numbers
+        const convertTypes = (obj, path = '') => {
+          for (const key in obj) {
+            const fullPath = path ? `${path}.${key}` : key;
+            const value = obj[key];
+
+            if (this.isObject(value)) {
+              convertTypes(value, fullPath);
+            } else if (typeof value === 'string' && this.originalTypes[fullPath] === 'number') {
+              const numValue = this.toNumber(value);
+              if (!isNaN(numValue)) {
+                obj[key] = numValue;
+              }
+            }
+          }
+        };
+
+        // Convert any string values back to numbers where needed
+        convertTypes(configToSave);
+
+        const tomlString = toml.dump(configToSave);
+
+        axios.post(`/api/service/config?serviceName=${this.serviceName}`,
+          JSON.stringify({ config: tomlString }),
+          { headers: { 'Content-Type': 'application/json' } }
+        )
+        .then((response) => {
+          if (response.data.status === 'success') {
+            this.$emit('close-editor');
+            this.$emit('config-saved');
+          } else {
+            console.error('Error saving config:', response.data.data);
+            alert('Error saving configuration');
+          }
+        })
+        .catch((error) => {
+          console.error('Error saving config:', error);
+          alert('Error saving configuration');
+        });
+      } catch (error) {
+        console.error('Error converting to TOML:', error);
+        alert('Error preparing configuration for saving');
+      }
+    },
+
+    cancelEdit() {
+      this.$emit('close-editor');
+    },
+
+    formatKey(key) {
+      // Sentence case, with known acronyms uppercased
+      return key
+        .split('_')
+        .map((word, i) => {
+          if (ACRONYMS.has(word)) {
+            return word.toUpperCase();
+          }
+          return i === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+        })
+        .join(' ');
+    },
+
+    // Dropdown option display text; the underlying value is unchanged
+    formatValue(option) {
+      const token = String(option).toLowerCase();
+      if (ACRONYMS.has(token)) {
+        return token.toUpperCase();
+      }
+      if (!token) {
+        return option;
+      }
+      return token.charAt(0).toUpperCase() + token.slice(1);
+    }
+  }
+};
+</script>
+
+<style scoped>
+.unsupported-field {
+  font-size: 0.85rem;
+  color: var(--ark-color-grey);
+  font-style: italic;
+}
+
+.editor-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.editor-container {
+  background-color: var(--ark-color-white);
+  border-radius: 12px;
+  width: 600px;
+  max-width: 90%;
+  box-shadow: 0px 0px 20px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+}
+
+.editor-content {
+  padding: 30px;
+  overflow-y: auto;
+}
+
+h1 {
+  text-align: center;
+  color: var(--ark-color-black);
+  margin-bottom: 25px;
+}
+
+.toml-editor {
+  margin-bottom: 20px;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--ark-color-black);
+}
+
+.field-help {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ark-color-grey);
+  margin: -4px 0 8px 0;
+  line-height: 1.4;
+}
+
+.callout-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  margin-bottom: 15px;
+  padding: 14px 16px;
+  background-color: var(--ark-color-light-grey);
+  border: 1px solid var(--ark-color-black-shadow);
+  border-left: 4px solid var(--ark-color-blue);
+  border-radius: 6px;
+  text-decoration: none;
+  transition: background-color 0.3s ease;
+}
+
+.callout-link:hover {
+  background-color: var(--ark-color-white);
+}
+
+.callout-text {
+  color: var(--ark-color-grey);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.callout-cta {
+  color: var(--ark-color-blue);
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.callout-cta::after {
+  content: ' \2192';
+}
+
+.callout-link:hover .callout-cta {
+  color: var(--ark-color-blue-hover);
+}
+
+.text-input,
+.number-input,
+.select-input {
+  width: 100%;
+  padding: 10px;
+  box-sizing: border-box;
+  border: 2px solid var(--ark-color-black-shadow);
+  border-radius: 6px;
+  font-size: 16px;
+  color: var(--ark-color-black);
+}
+
+.select-input {
+  background-color: var(--ark-color-white);
+  height: 42px;
+  cursor: pointer;
+}
+
+.number-input {
+  font-family: monospace;
+}
+
+.checkbox-group {
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.checkbox-input {
+  transform: scale(1.5);
+  margin-right: 10px;
+}
+
+.array-display {
+  padding: 10px;
+  background-color: var(--ark-color-black-shadow);
+  border-radius: 6px;
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.subtable-section {
+  margin-top: 30px;
+  margin-bottom: 25px;
+}
+
+.subtable-header {
+  background-color: var(--ark-color-black-shadow);
+  padding: 12px 15px;
+  border-radius: 6px;
+  font-weight: 600;
+  color: var(--ark-color-black);
+  margin-bottom: 15px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 14px;
+}
+
+.subtable-content {
+  padding: 0 10px;
+}
+
+.actions-container {
+  background-color: var(--ark-color-white);
+  border-top: 1px solid var(--ark-color-black-shadow);
+  border-radius: 0 0 12px 12px;
+  padding: 20px 30px;
+  position: sticky;
+  bottom: 0;
+}
+
+.actions {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.save-button,
+.cancel-button {
+  padding: 12px 20px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ark-color-white);
+  transition: background-color 0.3s ease;
+}
+
+.save-button {
+  background-color: var(--ark-color-green);
+}
+
+.save-button:hover {
+  background-color: var(--ark-color-green-hover);
+}
+
+.cancel-button {
+  background-color: var(--ark-color-red);
+}
+
+.cancel-button:hover {
+  background-color: var(--ark-color-red-hover);
+}
+</style>

@@ -1,0 +1,636 @@
+<template>
+  <div class="page-container">
+    <h1 class="page-title">System Information</h1>
+
+    <div v-if="loading" class="loading-container">
+      <i class="fas fa-spinner fa-spin"></i>
+      <p>Loading system information...</p>
+    </div>
+
+    <div v-else-if="error" class="error-container">
+      <i class="fas fa-exclamation-triangle"></i>
+      <h2>Unable to Load System Information</h2>
+      <p>{{ error }}</p>
+      <button @click="retry" class="retry-button">
+        <i class="fas fa-refresh"></i> Retry
+      </button>
+    </div>
+
+    <div v-else class="system-content">
+      <!-- System Cards Grid -->
+      <div class="system-grid">
+        <!-- Hardware Card -->
+        <SystemCard
+          title="Hardware"
+          icon="fa-microchip"
+          :data="hardwareData"
+        />
+
+        <!-- Platform Card -->
+        <SystemCard
+          title="Platform"
+          icon="fa-server"
+          :data="platformData"
+        />
+
+        <!-- Libraries Card (Jetson NVIDIA stack only) -->
+        <SystemCard
+          v-if="showLibrariesCard"
+          title="Libraries"
+          icon="fa-book"
+          :data="librariesData"
+        />
+
+        <!-- Power & Temperature Card -->
+        <SystemCard
+          title="Power & Temperature"
+          icon="fa-bolt"
+          :data="powerTempData"
+        >
+          <template v-if="hasTemperatureData" #footer>
+            <div class="temp-scroll-container">
+              <div
+                v-for="(temp, key) in allTemperatures"
+                :key="key"
+                class="temp-item"
+              >
+                <span class="temp-label">{{ formatTempLabel(key) }}:</span>
+                <span class="temp-value">{{ temp.toFixed(1) }}°C</span>
+              </div>
+            </div>
+          </template>
+        </SystemCard>
+
+        <!-- Network Card -->
+        <SystemCard
+          title="Network"
+          icon="fa-network-wired"
+          :data="networkData"
+        />
+
+        <!-- Memory Card -->
+        <SystemCard
+          title="Memory"
+          icon="fa-memory"
+          :data="{}"
+        >
+          <template #footer>
+            <div class="memory-section">
+              <div class="memory-item">
+                <ProgressBar
+                  label="RAM"
+                  :value="ramPercent"
+                  :showPercentage="true"
+                />
+                <div class="memory-info">
+                  <span>{{ formatMemorySize(ramTotal) }} Total</span>
+                  <span>{{ formatMemorySize(ramAvailable) }} Available</span>
+                </div>
+              </div>
+
+              <div
+                v-for="(disk, idx) in diskVolumes"
+                :key="disk.device || idx"
+                class="memory-item"
+              >
+                <ProgressBar
+                  :label="diskLabel(disk)"
+                  :value="disk.percent || 0"
+                  :showPercentage="true"
+                  :warningThreshold="80"
+                  :criticalThreshold="90"
+                />
+                <div class="memory-info">
+                  <span>{{ formatDiskSize(disk.total) }} Total</span>
+                  <span v-if="disk.mountpoint">
+                    {{ formatDiskSize(disk.available) }} Available
+                  </span>
+                  <span v-else class="disk-unmounted">Not mounted</span>
+                </div>
+              </div>
+            </div>
+          </template>
+        </SystemCard>
+      </div>
+
+      <!-- Hostname Management -->
+      <HostnameManager
+        :currentHostname="currentHostname"
+        @hostnameChanged="onHostnameChanged"
+      />
+    </div>
+  </div>
+</template>
+
+<script>
+import SystemService from '@/services/SystemService';
+import SystemCard from './components/SystemCard.vue';
+import ProgressBar from './components/ProgressBar.vue';
+import HostnameManager from './components/HostnameManager.vue';
+
+export default {
+  name: 'SystemPage',
+  components: {
+    SystemCard,
+    ProgressBar,
+    HostnameManager
+  },
+  data() {
+    return {
+      loading: true,
+      error: null,
+      systemInfo: null,
+      pollingInterval: null,
+      retryCount: 0,
+      maxRetries: 3
+    };
+  },
+  computed: {
+    currentHostname() {
+      // Check multiple possible locations for hostname
+      return this.systemInfo?.network?.hostname ||
+             this.systemInfo?.interfaces?.hostname ||
+             'Unknown';
+    },
+
+    deviceType() {
+      return this.systemInfo?.device_type || 'generic';
+    },
+
+    isJetson() {
+      return this.deviceType === 'jetson';
+    },
+
+    showLibrariesCard() {
+      // NVIDIA CUDA stack is Jetson-only; hide empty "Not available" wall on Modalix/Pi
+      return this.isJetson;
+    },
+
+    hardwareData() {
+      const hw = this.systemInfo?.hardware;
+      if (!hw) return { 'Status': 'Data unavailable' };
+
+      const data = {
+        'Model': hw.model || 'Not available',
+        'Module': hw.module || 'Not available',
+        'Serial': hw.serial_number || 'Not available'
+      };
+      // L4T / JetPack only on real Jetson
+      if (this.isJetson) {
+        data['L4T'] = hw.l4t || 'Not available';
+        data['JetPack'] = hw.jetpack || 'Not available';
+      }
+      return data;
+    },
+
+    platformData() {
+      const platform = this.systemInfo?.platform;
+      if (!platform) return { 'Status': 'Data unavailable' };
+
+      return {
+        'Distribution': platform.distribution || 'Not available',
+        'Release': platform.release || 'Not available',
+        'Kernel': platform.kernel || 'Not available',
+        'Architecture': platform.architecture || 'Not available',
+        'Python': platform.python || 'Not available'
+      };
+    },
+
+    librariesData() {
+      const libs = this.systemInfo?.libraries;
+      if (!this.isJetson) {
+        return {};
+      }
+      return {
+        'CUDA': libs?.cuda || 'Not available',
+        'OpenCV': libs?.opencv || 'Not available',
+        'OpenCV-CUDA': libs?.opencv_cuda ? 'Enabled' : 'Not available',
+        'cuDNN': libs?.cudnn || 'Not available',
+        'TensorRT': libs?.tensorrt || 'Not available',
+        'VPI': libs?.vpi || 'Not available',
+        'Vulkan': libs?.vulkan || 'Not available'
+      };
+    },
+
+    powerTempData() {
+      const data = {};
+      const power = this.systemInfo?.power;
+
+      if (this.isJetson) {
+        data['Power Mode'] = power?.nvpmodel || 'Not available';
+        data['Jetson Clocks'] = power?.jetson_clocks || 'Not available';
+      }
+      // Rail voltage / current when provided (Modalix INA238)
+      if (power?.voltage != null && Number(power.voltage) > 0) {
+        data['Voltage'] = `${Number(power.voltage).toFixed(2)} V`;
+      }
+      if (power?.current != null && Number.isFinite(Number(power.current))) {
+        data['Current'] = `${Number(power.current).toFixed(3)} A`;
+      }
+      // Jetson jtop and Modalix INA238 both use power.total in milliwatts
+      data['Power Draw'] =
+        power?.total && power.total > 0
+          ? `${(power.total / 1000).toFixed(2)} W`
+          : 'Not available';
+
+      // Primary temperatures (Jetson has cpu/gpu; Modalix may have ina238 die temp)
+      const temps = this.systemInfo?.temperature || power?.temperature || {};
+      if (this.isJetson) {
+        data['CPU Temp'] = temps.cpu ? `${temps.cpu.toFixed(1)}°C` : 'Not available';
+        data['GPU Temp'] = temps.gpu ? `${temps.gpu.toFixed(1)}°C` : 'Not available';
+      } else if (temps.ina238 != null) {
+        data['PMIC Temp'] = `${Number(temps.ina238).toFixed(1)}°C`;
+      } else if (temps.cpu != null) {
+        data['CPU Temp'] = `${Number(temps.cpu).toFixed(1)}°C`;
+      }
+
+      return data;
+    },
+
+    allTemperatures() {
+      // Get all temperature data for the scrollable list
+      const temps = this.systemInfo?.temperature || this.systemInfo?.power?.temperature;
+      if (!temps || temps.message) return {};
+
+      const result = {};
+      Object.entries(temps).forEach(([key, value]) => {
+        if (typeof value === 'number' && value > 0) {
+          result[key] = value;
+        }
+      });
+
+      return result;
+    },
+
+    hasTemperatureData() {
+      return Object.keys(this.allTemperatures).length > 2; // Show scroll if more than CPU/GPU
+    },
+
+    networkData() {
+      const network = this.systemInfo?.network || this.systemInfo?.interfaces;
+      if (!network) return { 'Status': 'Data unavailable' };
+
+      const data = {
+        'Hostname': network.hostname || 'Unknown'
+      };
+
+      const interfaces = network.interfaces || {};
+      Object.entries(interfaces).forEach(([iface, ip]) => {
+        data[iface] = ip;
+      });
+
+      return data;
+    },
+
+    memoryData() {
+      const memory = this.systemInfo?.resources?.memory;
+      const disk = this.systemInfo?.resources?.disk || this.systemInfo?.disk;
+
+      const data = {};
+
+      // RAM info
+      if (memory) {
+        data['Total RAM'] = `${memory.total.toFixed(1)} GB`;
+        data['Available RAM'] = `${memory.available.toFixed(1)} GB`;
+      } else {
+        data['Total RAM'] = 'Not available';
+        data['Available RAM'] = 'Not available';
+      }
+
+      // Disk info
+      if (disk) {
+        data['Total Disk'] = `${disk.total.toFixed(1)} GB`;
+        data['Available Disk'] = `${disk.available.toFixed(1)} GB`;
+      } else {
+        data['Total Disk'] = 'Not available';
+        data['Available Disk'] = 'Not available';
+      }
+
+      return data;
+    },
+
+    hasMemoryData() {
+      const memory = this.systemInfo?.resources?.memory;
+      const disk = this.systemInfo?.resources?.disk || this.systemInfo?.disk;
+      return !!(memory || disk);
+    },
+
+    ramPercent() {
+      return this.systemInfo?.resources?.memory?.percent || 0;
+    },
+
+    ramTotal() {
+      return this.systemInfo?.resources?.memory?.total || 0;
+    },
+
+    ramAvailable() {
+      return this.systemInfo?.resources?.memory?.available || 0;
+    },
+
+    /** All physical disks (eMMC + NVMe etc.); fall back to root-only disk field. */
+    diskVolumes() {
+      const disks = this.systemInfo?.resources?.disks;
+      if (Array.isArray(disks) && disks.length > 0) {
+        return disks;
+      }
+      const disk = this.systemInfo?.resources?.disk || this.systemInfo?.disk;
+      if (!disk) return [];
+      return [
+        {
+          name: 'Disk',
+          device: '/',
+          mountpoint: '/',
+          total: disk.total || 0,
+          used: disk.used || 0,
+          available: disk.available || 0,
+          percent: disk.percent || 0,
+          model: ''
+        }
+      ];
+    }
+  },
+
+  mounted() {
+    this.fetchSystemInfo();
+  },
+
+  beforeUnmount() {
+    this.stopPolling();
+  },
+
+  methods: {
+    async fetchSystemInfo() {
+      this.loading = true;
+      this.error = null;
+
+      try {
+        const response = await SystemService.getSystemInfo();
+
+        if (response.data) {
+          this.systemInfo = response.data;
+          this.loading = false;
+          this.retryCount = 0;
+
+          // Start polling after first successful load
+          if (!this.pollingInterval) {
+            this.startPolling();
+          }
+        } else {
+          throw new Error('No data received from server');
+        }
+      } catch (error) {
+        console.error('Error fetching system information:', error);
+
+        if (this.retryCount < this.maxRetries) {
+          this.retryCount++;
+          setTimeout(() => this.fetchSystemInfo(), 2000);
+        } else {
+          this.loading = false;
+          this.error = error.response?.data?.message ||
+                      error.message ||
+                      'Failed to connect to system service';
+        }
+      }
+    },
+
+    retry() {
+      this.retryCount = 0;
+      this.fetchSystemInfo();
+    },
+
+    startPolling() {
+      this.pollingInterval = setInterval(() => {
+        this.updateSystemInfo();
+      }, 5000);
+    },
+
+    stopPolling() {
+      if (this.pollingInterval) {
+        clearInterval(this.pollingInterval);
+        this.pollingInterval = null;
+      }
+    },
+
+    async updateSystemInfo() {
+      try {
+        const response = await SystemService.getSystemInfo();
+        if (response.data) {
+          this.systemInfo = response.data;
+        }
+      } catch (error) {
+        console.error('Error updating system information:', error);
+      }
+    },
+
+    onHostnameChanged() {
+      this.updateSystemInfo();
+    },
+
+    formatTempLabel(key) {
+      const labels = {
+        'cpu': 'CPU',
+        'gpu': 'GPU',
+        'tj': 'Junction',
+        'soc0': 'SoC 0',
+        'soc1': 'SoC 1',
+        'soc2': 'SoC 2',
+        'cv0': 'CV 0',
+        'cv1': 'CV 1',
+        'cv2': 'CV 2',
+        'iwlwifi': 'WiFi',
+        'thermal_zone0': 'Zone 0',
+        'thermal_zone1': 'Zone 1',
+        'thermal_zone2': 'Zone 2'
+      };
+      return labels[key] || key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    },
+
+    formatMemorySize(sizeInGB) {
+      if (!sizeInGB) return '0 GB';
+      return `${sizeInGB.toFixed(1)} GB`;
+    },
+
+    formatDiskSize(sizeInGB) {
+      if (!sizeInGB) return '0 GB';
+      if (sizeInGB >= 100) return `${sizeInGB.toFixed(0)} GB`;
+      return `${sizeInGB.toFixed(1)} GB`;
+    },
+
+    diskLabel(disk) {
+      if (!disk) return 'Disk';
+      const name = disk.name || disk.device || 'Disk';
+      if (disk.mountpoint === '/') return `${name} (/)`;
+      if (disk.mountpoint) return `${name} (${disk.mountpoint})`;
+      return name;
+    }
+  }
+}
+</script>
+
+<style scoped>
+.page-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+  padding-right: 40px;
+  gap: 24px;
+  box-sizing: border-box;
+}
+
+.page-title {
+  font-size: 2rem;
+  font-weight: 600;
+  color: var(--ark-color-black);
+  margin: 0;
+  text-align: center;
+}
+
+.loading-container,
+.error-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 40px;
+  min-height: 400px;
+}
+
+.loading-container i {
+  font-size: 2.5rem;
+  color: var(--ark-color-blue);
+}
+
+.error-container i {
+  font-size: 3rem;
+  color: var(--ark-color-orange);
+}
+
+.error-container h2 {
+  margin: 0;
+  color: var(--ark-color-black);
+}
+
+.error-container p {
+  color: var(--ark-color-black);
+  opacity: 0.8;
+  text-align: center;
+  max-width: 400px;
+}
+
+.retry-button {
+  padding: 10px 20px;
+  background-color: var(--ark-color-blue);
+  color: var(--ark-color-white);
+  border: none;
+  border-radius: 4px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.retry-button:hover {
+  background-color: var(--ark-color-blue-hover);
+}
+
+.system-content {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.system-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.memory-section {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-top: 12px;
+}
+
+.memory-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memory-info {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  color: #666;
+  padding: 0 2px;
+}
+
+.memory-info span:first-child {
+  font-weight: 500;
+}
+
+.disk-unmounted {
+  font-style: italic;
+  color: #999;
+}
+
+.temp-scroll-container {
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 12px 0;
+  border-top: 1px solid #f0f0f0;
+}
+
+.temp-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.temp-item:hover {
+  background-color: #f5f5f5;
+}
+
+.temp-label {
+  font-weight: 500;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.temp-value {
+  color: var(--ark-color-black);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+  .system-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .page-container {
+    padding: 16px;
+  }
+
+  .system-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+</style>
