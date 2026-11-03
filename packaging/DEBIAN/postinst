@@ -76,13 +76,6 @@ if [ -n "$ARK_HOME" ]; then
         echo "Legacy configs backed up to $LEGACY_BACKUP — merge custom edits into /etc/ark-os/ if needed."
         MIGRATED=1
     fi
-    # The router config of a source install reaches the merge below as the user copy:
-    # without it the fresh seed drops every endpoint added on the old install.
-    if [ ! -f /etc/ark-os/mavlink-router.conf ] && [ ! -f /var/lib/ark-os/.config-backup/mavlink-router.conf ] \
-       && [ -f "$ARK_HOME/.local/share/mavlink-router/main.conf" ]; then
-        mkdir -p /var/lib/ark-os/.config-backup
-        cp "$ARK_HOME/.local/share/mavlink-router/main.conf" /var/lib/ark-os/.config-backup/mavlink-router.conf
-    fi
 
     # (b) Stop and disable legacy user services (running system only).
     if [ -d /run/systemd/system ] && [ -n "$UID_VAL" ] && [ -d "$ARK_HOME/.config/systemd/user" ]; then
