@@ -102,9 +102,6 @@ if [ -n "$ARK_HOME" ]; then
 
     # (e) Remove legacy data dirs (configs were backed up in step a).
     rm -rf "$ARK_HOME"/.local/share/{mavlink-router,logloader,polaris,rtsp-server,rid-transmitter,flight_review}
-
-    # (i) Remove NVM install (legacy install bootstrapped Node via nvm; we ship our own).
-    rm -rf "$ARK_HOME"/.config/nvm
 fi
 
 # (f) Remove legacy /usr/local/bin entries (replaced by /usr/lib/ark-os/{bin,scripts}/).
