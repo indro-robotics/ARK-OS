@@ -154,8 +154,11 @@ install -m 0440 platform/common/ark_scripts.sudoers "$PKG/etc/sudoers.d/ark-os"
 # --- NetworkManager polkit rule + pkla (renamed) ---
 install -m 0644 platform/common/wifi/02-network-manager.rules \
     "$PKG/etc/polkit-1/rules.d/02-ark-network-manager.rules"
-install -m 0644 platform/common/wifi/99-network.pkla \
-    "$PKG/etc/polkit-1/localauthority/90-mandatory.d/99-ark-network.pkla"
+# The user entry carries the grant on Ubuntu 22.04: with the group entry alone,
+# settings.modify.system stays denied for a user in both sudo and netdev.
+NMPKLA="$PKG/etc/polkit-1/localauthority/90-mandatory.d/99-ark-network.pkla"
+sed "s/@ARK_USER@/$ARK_USER/g" platform/common/wifi/99-network.pkla > "$NMPKLA"
+chmod 0644 "$NMPKLA"
 
 # --- service-manager polkit rule: substitute @ARK_USER@; pi strips JETSON-ONLY ---
 SMR="$PKG/etc/polkit-1/rules.d/03-ark-service-manager.rules"

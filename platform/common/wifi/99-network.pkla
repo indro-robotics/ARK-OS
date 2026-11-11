@@ -1,5 +1,5 @@
 [Allow netdev users to modify all network states and settings]
-Identity=unix-group:netdev
+Identity=unix-group:netdev;unix-user:@ARK_USER@
 Action=org.freedesktop.NetworkManager.*
 ResultAny=yes
 ResultInactive=yes
