@@ -161,7 +161,9 @@ fetch() {
 # slash is read as a local deb. Resolve to an absolute path so cwd-relative and
 # downloaded debs both install correctly. --allow-downgrades lets an older build
 # install over a newer one (version testing/rollback), which apt refuses by default.
-apt_install_deb() { apt-get install -y --allow-downgrades "$(readlink -f "$1")"; }
+# --reinstall installs a rebuild that carries the installed version; without it apt
+# reports "already the newest version" and leaves the old files in place.
+apt_install_deb() { apt-get install -y --allow-downgrades --reinstall "$(readlink -f "$1")"; }
 
 install_jtop() {
     apt-get install -y python3-pip || return 1
