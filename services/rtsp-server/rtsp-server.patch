@@ -1,0 +1,398 @@
+diff --git a/src/Config.hpp b/src/Config.hpp
+index cce19c3..b2a589f 100644
+--- a/src/Config.hpp
++++ b/src/Config.hpp
+@@ -44,6 +44,11 @@ struct CameraConfig {
+ 	int framerate;
+ 	int bitrate;
+ 	CameraRotation rotation;
++	std::string source;
++	std::string encoder;
++	std::string device;
++	std::string bayer;
++	std::string launch;
+ 
+ 	std::pair<int, int> getDimensions() const
+ 	{
+diff --git a/src/RtspServer.cpp b/src/RtspServer.cpp
+index dbf06df..cfb5d6e 100644
+--- a/src/RtspServer.cpp
++++ b/src/RtspServer.cpp
+@@ -10,6 +10,7 @@
+ #include <chrono>
+ #include <thread>
+ #include <csignal>
++#include <filesystem>
+ 
+ // namespace gst c lib for readability
+ namespace gst
+@@ -72,8 +73,7 @@ void RtspServer::run()
+ 	mounts = gst::gst_rtsp_server_get_mount_points(server);
+ 	factory = gst::gst_rtsp_media_factory_new();
+ 
+-	// Build pipeline string
+-	pipeline = get_pipeline(detect_platform());
++	pipeline = build_pipeline(true);
+ 
+ 	gst::gst_rtsp_media_factory_set_launch(factory, pipeline.c_str());
+ 
+@@ -114,26 +114,39 @@ void RtspServer::run()
+ 	gst::g_object_unref(server);
+ }
+ 
+-std::string RtspServer::get_pipeline(Platform platform)
++std::string RtspServer::build_pipeline(bool probe)
+ {
+-	switch (platform) {
+-	case Platform::Ubuntu:
+-		return create_ubuntu_pipeline();
++	std::string pipeline;
++
++	if (_cameraConfig.source == "custom") {
++		pipeline = "( " + _cameraConfig.launch + " )";
++
++	} else if (_cameraConfig.source == "arducam-jetvariety") {
++		pipeline = create_jetvariety_pipeline();
++
++	} else if (_cameraConfig.source == "argus") {
++		pipeline = create_jetson_pipeline(probe);
+ 
+-	case Platform::Pi:
+-		return create_pi_pipeline();
++	} else {
++		switch (detect_platform()) {
++		case Platform::Pi:
++			return create_pi_pipeline();
+ 
+-	case Platform::Jetson:
+-		return create_jetson_pipeline();
++		case Platform::Jetson:
++			pipeline = create_jetson_pipeline(probe);
++			break;
++
++		default:
++			return create_ubuntu_pipeline();
++		}
+ 	}
+ 
+-	return create_ubuntu_pipeline();
++	std::cout << "Using pipeline: " << pipeline << std::endl;
++	return pipeline;
+ }
+ 
+-std::string RtspServer::create_jetson_pipeline()
++std::string RtspServer::create_jetson_pipeline(bool probe)
+ {
+-	std::stringstream ss;
+-
+ 	// Clamp the requested settings to the sensor's real capabilities. Requesting a
+ 	// framerate the sensor can't deliver makes nvarguscamerasrc fail to acquire the
+ 	// camera ("Frame Rate specified is greater than supported"), which then cascades
+@@ -145,12 +158,12 @@ std::string RtspServer::create_jetson_pipeline()
+ 	// /dev/video0, so v4l2-ctl sees EBUSY and prints nothing — a transient. Falling
+ 	// back would mean streaming at the requested framerate the sensor may not
+ 	// support, so it is better to wait a moment for a real answer.
+-	std::vector<SensorMode> modes = probe_sensor_modes(sensorId);
++	std::vector<SensorMode> modes = probe ? probe_sensor_modes(sensorId) : std::vector<SensorMode> {};
+ 
+ 	// Rate-limit the log (first few, then ~every 30s): an absent or never-free camera
+ 	// would otherwise write one journal line a second forever — the spam that made the
+ 	// log look stuck on this message.
+-	for (int attempt = 1; modes.empty(); ++attempt) {
++	for (int attempt = 1; probe && modes.empty(); ++attempt) {
+ 		if (attempt <= 5 || attempt % 30 == 0) {
+ 			std::cout << "No sensor modes detected (attempt " << attempt
+ 				  << "; is a camera connected, v4l-utils installed, and the camera free?); "
+@@ -173,46 +186,79 @@ std::string RtspServer::create_jetson_pipeline()
+ 		  << " @ " << _cameraConfig.framerate << "fps; streaming "
+ 		  << profile.width << "x" << profile.height << " @ " << profile.framerate << "fps" << std::endl;
+ 
+-	// Apply rotation using nvvidconv with flip-method
+-	// 0 = no rotation
+-	// 1 = 90 degrees (rotate clockwise)
+-	// 2 = 180 degrees
+-	// 3 = 270 degrees (rotate counter-clockwise)
++	// nvarguscamerasrc selects the sensor mode from these caps; the framerate must be
++	// one the sensor advertises. nvvidconv then enforces the final output size, so the
++	// result is deterministic even if argus emits the full sensor resolution.
++	std::stringstream ss;
++	ss << "( nvarguscamerasrc sensor-id=" << sensorId << " ! "
++	   << "video/x-raw(memory:NVMM),width=" << profile.width
++	   << ",height=" << profile.height
++	   << ",framerate=" << profile.framerate << "/1 ! "
++	   << jetson_encode(profile.width, profile.height, profile.framerate);
++	return ss.str();
++}
++
++std::string RtspServer::create_jetvariety_pipeline()
++{
++	const int w = _cameraConfig.getWidth();
++	const int h = _cameraConfig.getHeight();
++	const int fps = _cameraConfig.framerate;
++	std::stringstream ss;
++
++	// v4l2src on GStreamer 1.20 has no 10-bit Bayer caps, so the sensor is read as Y16 and cut to 8 bits.
++	ss << "( v4l2src device=" << _cameraConfig.device << " do-timestamp=true ! "
++	   << "video/x-raw,format=GRAY16_LE,width=" << w << ",height=" << h << ",framerate=" << fps << "/1 ! "
++	   << "videoconvert ! video/x-raw,format=GRAY8 ! ";
++
++	// join=false: merging the Bayer caps into the GRAY8 caps fails to link.
++	if (_cameraConfig.bayer != "mono") {
++		ss << "capssetter join=false replace=true caps=\"video/x-bayer,format=" << _cameraConfig.bayer
++		   << ",width=" << w << ",height=" << h << ",framerate=" << fps << "/1\" ! "
++		   << "bayer2rgb ! video/x-raw,format=BGRx ! ";
++	}
++
++	ss << jetson_encode(w, h, fps);
++	return ss.str();
++}
++
++// Rotation, scaling and the encoder for a Jetson source; the result closes the launch bin.
++std::string RtspServer::jetson_encode(int width, int height, int framerate)
++{
++	// nvvidconv flip-method: 1 = 90 clockwise, 2 = 180, 3 = 270; 90 and 270 swap the output size.
+ 	int flipMethod = 0;
+ 
+ 	switch (_cameraConfig.rotation) {
+-	case CameraRotation::ROTATE_90:  flipMethod = 1; break;
++	case CameraRotation::ROTATE_90:  flipMethod = 1; std::swap(width, height); break;
+ 
+ 	case CameraRotation::ROTATE_180: flipMethod = 2; break;
+ 
+-	case CameraRotation::ROTATE_270: flipMethod = 3; break;
++	case CameraRotation::ROTATE_270: flipMethod = 3; std::swap(width, height); break;
+ 
+ 	default: flipMethod = 0; break;
+ 	}
+ 
+-	// Output size after rotation: 90/270 swap width and height.
+-	int outWidth = profile.width;
+-	int outHeight = profile.height;
+-
+-	if (_cameraConfig.rotation == CameraRotation::ROTATE_90 || _cameraConfig.rotation == CameraRotation::ROTATE_270) {
+-		std::swap(outWidth, outHeight);
++	const std::string& enc = _cameraConfig.encoder;
++	std::stringstream ss;
++	ss << "nvvidconv flip-method=" << flipMethod << " ! ";
++
++	if (enc == "x264enc") {
++		ss << "video/x-raw,width=" << width << ",height=" << height << ",format=I420 ! "
++		   << "x264enc key-int-max=" << framerate << " bitrate=" << _cameraConfig.bitrate
++		   << " tune=zerolatency speed-preset=ultrafast ! "
++		   << "video/x-h264,stream-format=byte-stream,profile=baseline ! "
++		   << "rtph264pay config-interval=1 mtu=1400 name=pay0 pt=96 )";
++		return ss.str();
+ 	}
+ 
+-	// nvarguscamerasrc selects the sensor mode from these caps; the framerate must be
+-	// one the sensor advertises. nvvidconv then enforces the final output size, so the
+-	// result is deterministic even if argus emits the full sensor resolution.
+-	ss << "( nvarguscamerasrc sensor-id=" << sensorId << " ! "
+-	   << "video/x-raw(memory:NVMM),width=" << profile.width
+-	   << ",height=" << profile.height
+-	   << ",framerate=" << profile.framerate << "/1 ! "
+-	   << "nvvidconv flip-method=" << flipMethod << " ! "
+-	   << "video/x-raw,width=" << outWidth << ",height=" << outHeight << ",format=I420 ! "
+-	   << "x264enc key-int-max=" << profile.framerate << " bitrate=" << _cameraConfig.bitrate
+-	   << " tune=zerolatency speed-preset=ultrafast ! "
+-	   << "video/x-h264,stream-format=byte-stream,profile=baseline ! "
+-	   << "rtph264pay config-interval=1 mtu=1400 name=pay0 pt=96 )";
+-
+-	std::cout << "Using pipeline: " << ss.str() << std::endl;
++	const bool h265 = enc == "nvv4l2h265enc";
++	// poc-type=2: no picture reordering, so the decoder holds no frames back.
++	ss << "video/x-raw(memory:NVMM),width=" << width << ",height=" << height << ",format=NV12 ! "
++	   << enc << " bitrate=" << _cameraConfig.bitrate * 1000 << " control-rate=1"
++	   << " iframeinterval=" << framerate << " idrinterval=" << framerate
++	   << " insert-sps-pps=true insert-vui=true preset-level=1 maxperf-enable=true"
++	   << (h265 ? "" : " profile=0 poc-type=2") << " ! "
++	   << (h265 ? "h265parse ! rtph265pay" : "h264parse ! rtph264pay")
++	   << " config-interval=1 mtu=1400 name=pay0 pt=96 )";
+ 	return ss.str();
+ }
+ 
+@@ -313,6 +359,35 @@ std::string RtspServer::create_ubuntu_pipeline()
+ 	return ss.str();
+ }
+ 
++std::string resolve_encoder(const std::string& encoder)
++{
++	gst::gst_init(nullptr, nullptr);
++
++	const auto installed = [](const std::string & name) {
++		gst::GstElementFactory* factory = gst::gst_element_factory_find(name.c_str());
++
++		if (factory) {
++			gst::gst_object_unref(factory);
++		}
++
++		return factory != nullptr;
++	};
++
++	if (encoder != "auto") {
++		return installed(encoder) ? encoder : "";
++	}
++
++	// The encoder element alone does not prove an NVENC engine: Orin Nano has none.
++	std::error_code ec;
++	bool nvenc = false;
++
++	for (const auto& dev : std::filesystem::directory_iterator("/sys/bus/platform/devices", ec)) {
++		nvenc = nvenc || dev.path().extension() == ".nvenc";
++	}
++
++	return nvenc && installed("nvv4l2h264enc") ? "nvv4l2h264enc" : "x264enc";
++}
++
+ RtspServer::Platform RtspServer::detect_platform()
+ {
+ 	std::array<char, 128> buffer;
+diff --git a/src/RtspServer.hpp b/src/RtspServer.hpp
+index d0c36fd..bcb2fc9 100644
+--- a/src/RtspServer.hpp
++++ b/src/RtspServer.hpp
+@@ -8,6 +8,7 @@ class RtspServer
+ public:
+ 	RtspServer(const ServerConfig& serverConfig, const CameraConfig& cameraConfig);
+ 	void run();
++	std::string build_pipeline(bool probe);
+ 
+ private:
+ 	enum class Platform {
+@@ -17,8 +18,9 @@ private:
+ 	};
+ 
+ 	Platform detect_platform();
+-	std::string get_pipeline(Platform platform);
+-	std::string create_jetson_pipeline();
++	std::string create_jetson_pipeline(bool probe);
++	std::string create_jetvariety_pipeline();
++	std::string jetson_encode(int width, int height, int framerate);
+ 	std::string create_pi_pipeline();
+ 	std::string create_ubuntu_pipeline();
+ 
+@@ -30,3 +32,6 @@ private:
+ 	// Camera configuration
+ 	CameraConfig _cameraConfig;
+ };
++
++// The element [camera] encoder names, or "" when that element is not installed.
++std::string resolve_encoder(const std::string& encoder);
+diff --git a/src/main.cpp b/src/main.cpp
+index e555459..fac9cb8 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -26,6 +26,28 @@ static std::optional<int> parseInt(const toml::node_view<toml::node>& node)
+ 	return std::nullopt;
+ }
+ 
++static bool accepted(const std::string& key, const std::string& value, std::initializer_list<const char*> values)
++{
++	std::string list;
++
++	for (const char* v : values) {
++		if (value == v) {
++			return true;
++		}
++
++		list += list.empty() ? v : std::string(", ") + v;
++	}
++
++	std::cerr << "[camera] " << key << ": \"" << value << "\" refused, accepted: " << list << std::endl;
++	return false;
++}
++
++static const char* USAGE =
++	"Usage: rtsp-server [--config <path>] [--print-pipeline]\n"
++	"  --config <path>    config file, default ~/.config/ark/rtsp-server/config.toml, then /opt/ark/share/rtsp-server/config.toml\n"
++	"  --print-pipeline   print the pipeline for the config and exit\n"
++	"  -h, --help         print this help and exit\n";
++
+ int main(int argc, char** argv)
+ {
+ 	// Initialize default configuration
+@@ -39,7 +61,12 @@ int main(int argc, char** argv)
+ 			.resolution = ResolutionPreset::R640x480,
+ 			.framerate = 15,
+ 			.bitrate = 2000,
+-			.rotation = CameraRotation::ROTATE_0
++			.rotation = CameraRotation::ROTATE_0,
++			.source = "auto",
++			.encoder = "x264enc",
++			.device = "/dev/video0",
++			.bayer = "rggb",
++			.launch = ""
+ 		}
+ 	};
+ 
+@@ -50,10 +77,19 @@ int main(int argc, char** argv)
+ 	const auto default_config = std::filesystem::path("/opt/ark/share/rtsp-server/config.toml");
+ 	std::string config_path = (std::filesystem::exists(user_config) ? user_config : default_config).string();
+ 
++	bool print_pipeline = false;
++
+ 	for (int i = 1; i < argc; i++) {
+ 		std::string arg = argv[i];
+ 
+-		if (arg == "--config" && i + 1 < argc) {
++		if (arg == "--help" || arg == "-h") {
++			std::cout << USAGE;
++			return 0;
++
++		} else if (arg == "--print-pipeline") {
++			print_pipeline = true;
++
++		} else if (arg == "--config" && i + 1 < argc) {
+ 			config_path = argv[++i];
+ 
+ 		} else if (arg.rfind("--config=", 0) == 0) {
+@@ -120,6 +156,12 @@ int main(int argc, char** argv)
+ 				std::cout << "Rotation set to: " << rotationToString(config.camera.rotation)
+ 					  << " degrees" << std::endl;
+ 			}
++
++			config.camera.source = (*camera)["source"].value_or(config.camera.source);
++			config.camera.encoder = (*camera)["encoder"].value_or(config.camera.encoder);
++			config.camera.device = (*camera)["device"].value_or(config.camera.device);
++			config.camera.bayer = (*camera)["bayer"].value_or(config.camera.bayer);
++			config.camera.launch = (*camera)["launch"].value_or(config.camera.launch);
+ 		}
+ 
+ 	} catch (const toml::parse_error& err) {
+@@ -131,7 +173,36 @@ int main(int argc, char** argv)
+ 		std::cerr << "Using default configuration." << std::endl;
+ 	}
+ 
++	const CameraConfig& cam = config.camera;
++
++	if (!accepted("source", cam.source, {"auto", "argus", "arducam-jetvariety", "custom"})
++	    || !accepted("encoder", cam.encoder, {"auto", "x264enc", "nvv4l2h264enc", "nvv4l2h265enc"})
++	    || !accepted("bayer", cam.bayer, {"rggb", "bggr", "grbg", "gbrg", "mono"})) {
++		return 1;
++	}
++
++	if (cam.source == "custom" && cam.launch.empty()) {
++		std::cerr << "[camera] launch: empty, required by source custom" << std::endl;
++		return 1;
++	}
++
++	const std::string encoder = resolve_encoder(cam.encoder);
++
++	if (encoder.empty()) {
++		std::cerr << "[camera] encoder: " << cam.encoder << " not installed" << std::endl;
++		return 1;
++	}
++
++	config.camera.encoder = encoder;
++	std::cout << "Encoder: " << encoder << std::endl;
++
+ 	RtspServer server(config.server, config.camera);
++
++	if (print_pipeline) {
++		server.build_pipeline(false);
++		return 0;
++	}
++
+ 	server.run();
+ 
+ 	return 0;

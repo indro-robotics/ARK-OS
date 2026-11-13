@@ -74,7 +74,10 @@ echo "==> logloader (make -> cmake)"
 install -m 0755 services/logloader/logloader/build/logloader "$BIN_DIR/"
 
 echo "==> rtsp-server (make -> cmake)"
-( cd services/rtsp-server/rtsp-server && make )
+( cd services/rtsp-server/rtsp-server
+  git apply -R --check ../rtsp-server.patch 2>/dev/null || git apply ../rtsp-server.patch 2>/dev/null \
+    || { echo "ERROR: services/rtsp-server/rtsp-server.patch does not apply to the rtsp-server submodule" >&2; exit 1; }
+  make )
 install -m 0755 services/rtsp-server/rtsp-server/build/rtsp-server "$BIN_DIR/"
 
 echo "==> polaris-client-mavlink (make -> cmake)"
