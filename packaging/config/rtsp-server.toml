@@ -10,3 +10,15 @@ resolution = "1920x1080"
 resolution_options = ["320x240", "640x480", "1280x720", "1920x1080"]
 rotation = "0"
 rotation_options = ["0", "90", "180", "270"]
+# auto: the platform's camera (Argus CSI on Jetson); arducam-jetvariety: raw V4L2 sensor on device; custom: the launch line.
+source = "auto"
+source_options = ["auto", "argus", "arducam-jetvariety", "custom"]
+# auto: NVENC H.264 when the module has the engine, else x264enc. Applies to argus and arducam-jetvariety.
+encoder = "x264enc"
+encoder_options = ["auto", "x264enc", "nvv4l2h264enc", "nvv4l2h265enc"]
+device = "/dev/video0"
+# Bayer order of an arducam-jetvariety sensor, or mono for a grey picture.
+bayer = "rggb"
+bayer_options = ["rggb", "bggr", "grbg", "gbrg", "mono"]
+# Full launch line for source custom; it ends in a payloader named pay0.
+launch = ""
