@@ -22,7 +22,7 @@ verdict() {
     if [ "$1" = 0 ]; then echo "PASS  $2"; else echo "FAIL  $2"; fails=$((fails + 1)); fi
 }
 
-for src in 'source = "argus"' 'source = "arducam-jetvariety"' 'source = "arducam-jetvariety"\nbayer = "mono"' 'source = "auto"'; do
+for src in 'source = "argus"' 'source = "arducam-jetvariety"' 'source = "arducam-jetvariety"\nbayer = "mono"' 'source = "arducam-jetvariety"\nbayer = "mono"\ncapture = "1920x1200"' 'source = "auto"'; do
     for enc in x264enc nvv4l2h264enc nvv4l2h265enc auto; do
         for rot in 0 90; do
             name="$(printf '%b' "$src" | tr "\n" " ") encoder = $enc rotation = $rot"
@@ -53,6 +53,7 @@ refused() {
 }
 refused 'source = "usb"' '\[camera\] source: "usb" refused, accepted: auto, argus, arducam-jetvariety, custom'
 refused 'encoder = "h264"' '\[camera\] encoder: "h264" refused, accepted: auto, x264enc, nvv4l2h264enc, nvv4l2h265enc'
+refused 'source = "arducam-jetvariety"\ncapture = "wide"' '\[camera\] capture: "wide" refused, accepted: empty, or <width>x<height>'
 refused 'source = "arducam-jetvariety"\nbayer = "RGGB"' '\[camera\] bayer: "RGGB" refused, accepted: rggb, bggr, grbg, gbrg, mono'
 refused 'source = "custom"' '\[camera\] launch: empty, required by source custom'
 

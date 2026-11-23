@@ -1,8 +1,8 @@
 diff --git a/src/Config.hpp b/src/Config.hpp
-index cce19c3..b2a589f 100644
+index cce19c3..0e16d84 100644
 --- a/src/Config.hpp
 +++ b/src/Config.hpp
-@@ -44,6 +44,11 @@ struct CameraConfig {
+@@ -44,6 +44,12 @@ struct CameraConfig {
  	int framerate;
  	int bitrate;
  	CameraRotation rotation;
@@ -10,12 +10,13 @@ index cce19c3..b2a589f 100644
 +	std::string encoder;
 +	std::string device;
 +	std::string bayer;
++	std::string capture;
 +	std::string launch;
  
  	std::pair<int, int> getDimensions() const
  	{
 diff --git a/src/RtspServer.cpp b/src/RtspServer.cpp
-index dbf06df..cfb5d6e 100644
+index dbf06df..29523f8 100644
 --- a/src/RtspServer.cpp
 +++ b/src/RtspServer.cpp
 @@ -10,6 +10,7 @@
@@ -103,7 +104,7 @@ index dbf06df..cfb5d6e 100644
  		if (attempt <= 5 || attempt % 30 == 0) {
  			std::cout << "No sensor modes detected (attempt " << attempt
  				  << "; is a camera connected, v4l-utils installed, and the camera free?); "
-@@ -173,46 +186,79 @@ std::string RtspServer::create_jetson_pipeline()
+@@ -173,46 +186,99 @@ std::string RtspServer::create_jetson_pipeline()
  		  << " @ " << _cameraConfig.framerate << "fps; streaming "
  		  << profile.width << "x" << profile.height << " @ " << profile.framerate << "fps" << std::endl;
  
@@ -126,20 +127,40 @@ index dbf06df..cfb5d6e 100644
 +
 +std::string RtspServer::create_jetvariety_pipeline()
 +{
-+	const int w = _cameraConfig.getWidth();
++	int w = _cameraConfig.getWidth();
 +	const int h = _cameraConfig.getHeight();
 +	const int fps = _cameraConfig.framerate;
++	int cw = w;
++	int ch = h;
 +	std::stringstream ss;
++
++	// [camera] capture reads a larger sensor area; nvvidconv scales it to the stream height at the capture shape.
++	if (std::sscanf(_cameraConfig.capture.c_str(), "%dx%d", &cw, &ch) == 2 && cw > 0 && ch > 0) {
++		w = (cw * h / ch + 1) / 2 * 2;
++
++	} else {
++		cw = w;
++		ch = h;
++	}
 +
 +	// v4l2src on GStreamer 1.20 has no 10-bit Bayer caps, so the sensor is read as Y16 and cut to 8 bits.
 +	ss << "( v4l2src device=" << _cameraConfig.device << " do-timestamp=true ! "
-+	   << "video/x-raw,format=GRAY16_LE,width=" << w << ",height=" << h << ",framerate=" << fps << "/1 ! "
-+	   << "videoconvert ! video/x-raw,format=GRAY8 ! ";
++	   << "video/x-raw,format=GRAY16_LE,width=" << cw << ",height=" << ch << " ! "
++	   // The sensor free-runs near 50 fps and the driver resets its frame_rate control at stream start.
++	   << "videorate drop-only=true ! video/x-raw,framerate=" << fps << "/1 ! "
++	   // 4 threads: on 1 thread this conversion holds a 1280x720 stream near 23 fps.
++	   // The queue puts scaling and encoding on their own thread; without it a whole-sensor capture misses 30 fps on x264enc.
++	   << "videoconvert n-threads=4 ! queue max-size-buffers=3 leaky=downstream ! ";
 +
 +	// join=false: merging the Bayer caps into the GRAY8 caps fails to link.
-+	if (_cameraConfig.bayer != "mono") {
-+		ss << "capssetter join=false replace=true caps=\"video/x-bayer,format=" << _cameraConfig.bayer
-+		   << ",width=" << w << ",height=" << h << ",framerate=" << fps << "/1\" ! "
++	if (_cameraConfig.bayer == "mono") {
++		// nvvidconv takes no GRAY8.
++		ss << "video/x-raw,format=I420 ! ";
++
++	} else {
++		ss << "video/x-raw,format=GRAY8 ! "
++		   << "capssetter join=false replace=true caps=\"video/x-bayer,format=" << _cameraConfig.bayer
++		   << ",width=" << cw << ",height=" << ch << ",framerate=" << fps << "/1\" ! "
 +		   << "bayer2rgb ! video/x-raw,format=BGRx ! ";
 +	}
 +
@@ -211,7 +232,7 @@ index dbf06df..cfb5d6e 100644
  	return ss.str();
  }
  
-@@ -313,6 +359,35 @@ std::string RtspServer::create_ubuntu_pipeline()
+@@ -313,6 +379,35 @@ std::string RtspServer::create_ubuntu_pipeline()
  	return ss.str();
  }
  
@@ -279,10 +300,15 @@ index d0c36fd..bcb2fc9 100644
 +// The element [camera] encoder names, or "" when that element is not installed.
 +std::string resolve_encoder(const std::string& encoder);
 diff --git a/src/main.cpp b/src/main.cpp
-index e555459..fac9cb8 100644
+index e555459..cf8dca7 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -26,6 +26,28 @@ static std::optional<int> parseInt(const toml::node_view<toml::node>& node)
+@@ -1,3 +1,4 @@
++#include <cstdio>
+ #include "RtspServer.hpp"
+ #include "Config.hpp"
+ #include <iostream>
+@@ -26,6 +27,28 @@ static std::optional<int> parseInt(const toml::node_view<toml::node>& node)
  	return std::nullopt;
  }
  
@@ -311,7 +337,7 @@ index e555459..fac9cb8 100644
  int main(int argc, char** argv)
  {
  	// Initialize default configuration
-@@ -39,7 +61,12 @@ int main(int argc, char** argv)
+@@ -39,7 +62,13 @@ int main(int argc, char** argv)
  			.resolution = ResolutionPreset::R640x480,
  			.framerate = 15,
  			.bitrate = 2000,
@@ -321,11 +347,12 @@ index e555459..fac9cb8 100644
 +			.encoder = "x264enc",
 +			.device = "/dev/video0",
 +			.bayer = "rggb",
++			.capture = "",
 +			.launch = ""
  		}
  	};
  
-@@ -50,10 +77,19 @@ int main(int argc, char** argv)
+@@ -50,10 +79,19 @@ int main(int argc, char** argv)
  	const auto default_config = std::filesystem::path("/opt/ark/share/rtsp-server/config.toml");
  	std::string config_path = (std::filesystem::exists(user_config) ? user_config : default_config).string();
  
@@ -346,7 +373,7 @@ index e555459..fac9cb8 100644
  			config_path = argv[++i];
  
  		} else if (arg.rfind("--config=", 0) == 0) {
-@@ -120,6 +156,12 @@ int main(int argc, char** argv)
+@@ -120,6 +158,13 @@ int main(int argc, char** argv)
  				std::cout << "Rotation set to: " << rotationToString(config.camera.rotation)
  					  << " degrees" << std::endl;
  			}
@@ -355,11 +382,12 @@ index e555459..fac9cb8 100644
 +			config.camera.encoder = (*camera)["encoder"].value_or(config.camera.encoder);
 +			config.camera.device = (*camera)["device"].value_or(config.camera.device);
 +			config.camera.bayer = (*camera)["bayer"].value_or(config.camera.bayer);
++			config.camera.capture = (*camera)["capture"].value_or(config.camera.capture);
 +			config.camera.launch = (*camera)["launch"].value_or(config.camera.launch);
  		}
  
  	} catch (const toml::parse_error& err) {
-@@ -131,7 +173,36 @@ int main(int argc, char** argv)
+@@ -131,7 +176,44 @@ int main(int argc, char** argv)
  		std::cerr << "Using default configuration." << std::endl;
  	}
  
@@ -368,6 +396,14 @@ index e555459..fac9cb8 100644
 +	if (!accepted("source", cam.source, {"auto", "argus", "arducam-jetvariety", "custom"})
 +	    || !accepted("encoder", cam.encoder, {"auto", "x264enc", "nvv4l2h264enc", "nvv4l2h265enc"})
 +	    || !accepted("bayer", cam.bayer, {"rggb", "bggr", "grbg", "gbrg", "mono"})) {
++		return 1;
++	}
++
++	int cw = 0, ch = 0;
++	char rest = 0;
++
++	if (!cam.capture.empty() && (std::sscanf(cam.capture.c_str(), "%dx%d%c", &cw, &ch, &rest) != 2 || cw <= 0 || ch <= 0)) {
++		std::cerr << "[camera] capture: \"" << cam.capture << "\" refused, accepted: empty, or <width>x<height>" << std::endl;
 +		return 1;
 +	}
 +

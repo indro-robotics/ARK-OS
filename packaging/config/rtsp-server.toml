@@ -17,6 +17,8 @@ source_options = ["auto", "argus", "arducam-jetvariety", "custom"]
 encoder = "x264enc"
 encoder_options = ["auto", "x264enc", "nvv4l2h264enc", "nvv4l2h265enc"]
 device = "/dev/video0"
+# Sensor area an arducam-jetvariety source reads, as <width>x<height>, scaled to the height of resolution; empty reads resolution.
+capture = ""
 # Bayer order of an arducam-jetvariety sensor, or mono for a grey picture.
 bayer = "rggb"
 bayer_options = ["rggb", "bggr", "grbg", "gbrg", "mono"]
